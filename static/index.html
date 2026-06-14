@@ -104,10 +104,6 @@
     cursor: pointer;
     accent-color: #0071e3;
   }
-  .auto-send-hint {
-    color: #a1a1a6;
-    font-size: 12px;
-  }
   .hint {
     margin-top: 12px;
     font-size: 12px;
@@ -175,7 +171,6 @@
 <label class="auto-send">
   <input type="checkbox" id="auto-send">
   <span>⚡ 自动发送</span>
-  <span class="auto-send-hint">输入停顿 0.6s 后自动发送（中文输入法选词期间不触发）</span>
 </label>
 <div class="row">
   <button id="send" disabled>发送</button>
@@ -223,6 +218,7 @@ let reconnectDelay = 1000;
 let toastTimer = null;
 let autoSendTimer = null;
 let isComposing = false;
+let lastSentType = null;
 
 function setStatus(s, connected) {
   statusText.textContent = s;
@@ -239,6 +235,7 @@ function toast(msg) {
 function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj));
+    lastSentType = obj.type;
     return true;
   }
   toast('未连接');
@@ -266,7 +263,12 @@ function connect() {
     let m;
     try { m = JSON.parse(ev.data); } catch { return; }
     switch (m.type) {
-      case 'ok':              toast('已写入 PC 剪贴板'); break;
+      case 'ok':
+        // 文本注入不弹 toast（用户能直接看到 PC 焦点窗口出字，频繁 toast 反而烦）
+        if (lastSentType === 'set_clipboard_image') {
+          toast('已写入 PC 剪贴板');
+        }
+        break;
       case 'clipboard_text':  onPullText(m.content); break;
       case 'clipboard_image': onPullImage(m.data, m.mime); break;
       case 'empty':           toast('PC 剪贴板为空'); break;
