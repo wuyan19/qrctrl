@@ -86,6 +86,28 @@
   .row.tools button:active {
     background: #e0e0e5;
   }
+  .auto-send {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    font-size: 13px;
+    color: #6e6e73;
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .auto-send input {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    cursor: pointer;
+    accent-color: #0071e3;
+  }
+  .auto-send-hint {
+    color: #a1a1a6;
+    font-size: 12px;
+  }
   .hint {
     margin-top: 12px;
     font-size: 12px;
@@ -150,6 +172,11 @@
   <span id="status-text">连接中...</span>
 </div>
 <textarea id="text" placeholder="点击这里输入文本，或粘贴截图..." autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>
+<label class="auto-send">
+  <input type="checkbox" id="auto-send">
+  <span>⚡ 自动发送</span>
+  <span class="auto-send-hint">输入停顿 0.6s 后自动发送（中文输入法选词期间不触发）</span>
+</label>
 <div class="row">
   <button id="send" disabled>发送</button>
   <button id="clear" class="secondary">清空</button>
@@ -189,10 +216,13 @@ const modal = document.getElementById('img-modal');
 const modalImg = document.getElementById('modal-img');
 const modalClose = document.getElementById('modal-close');
 const toastEl = document.getElementById('toast');
+const autoSendChk = document.getElementById('auto-send');
 
 let ws = null;
 let reconnectDelay = 1000;
 let toastTimer = null;
+let autoSendTimer = null;
+let isComposing = false;
 
 function setStatus(s, connected) {
   statusText.textContent = s;
@@ -248,10 +278,28 @@ connect();
 
 // 发送文本（统一 JSON 协议）
 function sendText() {
+  cancelAutoSend();
   const text = textEl.value;
   if (!text.trim()) return;
   if (send({ type: 'text', value: text })) {
     textEl.value = '';
+  }
+}
+
+// 自动发送：输入停顿 600ms 后发送，IME 选词期间不触发（避免发送半截拼音）
+function scheduleAutoSend() {
+  if (!autoSendChk.checked) return;
+  if (isComposing) return;
+  if (autoSendTimer) clearTimeout(autoSendTimer);
+  autoSendTimer = setTimeout(() => {
+    autoSendTimer = null;
+    sendText();
+  }, 600);
+}
+function cancelAutoSend() {
+  if (autoSendTimer) {
+    clearTimeout(autoSendTimer);
+    autoSendTimer = null;
   }
 }
 
@@ -325,13 +373,19 @@ async function uploadImage(file) {
 
 // 按钮绑定
 sendBtn.addEventListener('click', sendText);
-clearBtn.addEventListener('click', () => { textEl.value = ''; });
+clearBtn.addEventListener('click', () => { cancelAutoSend(); textEl.value = ''; });
 textEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     sendText();
   }
 });
+textEl.addEventListener('compositionstart', () => { isComposing = true; });
+textEl.addEventListener('compositionend', () => {
+  isComposing = false;
+  scheduleAutoSend();
+});
+textEl.addEventListener('input', scheduleAutoSend);
 pullTextBtn.addEventListener('click', () => send({ type: 'get_clipboard_text' }));
 pullImageBtn.addEventListener('click', () => send({ type: 'get_clipboard_image' }));
 pickImageBtn.addEventListener('click', () => filePick.click());
