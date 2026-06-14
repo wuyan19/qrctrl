@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>qrctrl</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f5f5f7;
+    color: #1d1d1f;
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    min-height: 100vh;
+  }
+  .status {
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: #fff;
+    margin-bottom: 14px;
+    font-size: 14px;
+    font-weight: 500;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .status .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #999; flex-shrink: 0;
+  }
+  .status.connected { background: #e6f9e6; }
+  .status.connected .dot { background: #2cb24a; }
+  .status.disconnected { background: #fde8e8; }
+  .status.disconnected .dot { background: #d33; }
+  textarea {
+    flex: 1;
+    min-height: 140px;
+    border: 1px solid #d2d2d7;
+    border-radius: 10px;
+    padding: 14px;
+    font-size: 16px;
+    font-family: inherit;
+    resize: none;
+    background: #fff;
+    outline: none;
+  }
+  textarea:focus { border-color: #0071e3; }
+  .row {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  button {
+    flex: 1;
+    padding: 14px 24px;
+    background: #0071e3;
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-size: 16px;
+    font-weight: 500;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:active { background: #0058b9; }
+  button:disabled { background: #b8b8bf; cursor: not-allowed; }
+  button.secondary {
+    flex: 0 0 auto;
+    background: #fff;
+    color: #0071e3;
+    padding: 14px 18px;
+    border: 1px solid #0071e3;
+  }
+  .hint {
+    margin-top: 12px;
+    font-size: 12px;
+    color: #6e6e73;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="status" id="status">
+  <span class="dot"></span>
+  <span id="status-text">连接中...</span>
+</div>
+<textarea id="text" placeholder="点击这里用语音输入..." autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>
+<div class="row">
+  <button id="send" disabled>发送</button>
+  <button id="clear" class="secondary">清空</button>
+</div>
+<div class="hint">回车发送 · Shift+Enter 换行 · 断线自动重连</div>
+
+<script>
+const token = new URLSearchParams(location.search).get('t') || '';
+const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+const wsUrl = `${proto}//${location.host}/ws?t=${encodeURIComponent(token)}`;
+
+const statusEl = document.getElementById('status');
+const statusText = document.getElementById('status-text');
+const textEl = document.getElementById('text');
+const sendBtn = document.getElementById('send');
+const clearBtn = document.getElementById('clear');
+
+let ws = null;
+let reconnectDelay = 1000;
+
+function setStatus(s, connected) {
+  statusText.textContent = s;
+  statusEl.className = 'status ' + (connected ? 'connected' : 'disconnected');
+}
+
+function connect() {
+  setStatus('连接中...', false);
+  ws = new WebSocket(wsUrl);
+  ws.onopen = () => {
+    setStatus('已连接', true);
+    sendBtn.disabled = false;
+    reconnectDelay = 1000;
+  };
+  ws.onclose = () => {
+    setStatus('已断开 · ' + Math.round(reconnectDelay / 1000) + 's 后重连', false);
+    sendBtn.disabled = true;
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+  };
+  ws.onerror = () => {
+    setStatus('连接错误', false);
+  };
+}
+connect();
+
+function send() {
+  const text = textEl.value;
+  if (!text.trim()) return;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(text);
+    textEl.value = '';
+  }
+}
+
+sendBtn.addEventListener('click', send);
+clearBtn.addEventListener('click', () => { textEl.value = ''; });
+
+textEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+</script>
+</body>
+</html>
