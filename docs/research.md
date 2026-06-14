@@ -170,7 +170,7 @@ match msg {
 
 ---
 
-## 七、反向通道：PC → 手机（剪贴板同步）
+## 七、反向通道：PC → 手机（剪贴板同步）【✅ v0.2.0 已实施（文本 + 图片）】
 
 ### 7.1 使用场景
 
@@ -299,7 +299,7 @@ axum WebSocket 默认消息上限 64 MB，可放行。
 
 ---
 
-## 八、手机 → PC 图片/文件推送
+## 八、手机 → PC 图片/文件推送【✅ v0.2.0 已实施（仅图片）】
 
 ### 8.1 使用场景
 
@@ -421,3 +421,126 @@ cb.set_image(arboard::ImageData {
 | 大图测试 / 错误处理 | 1 小时 |
 
 整体：约 4 小时。
+
+---
+
+## 九、剪贴板读图修复：file_list 优先策略【✅ v0.2.0 已实施】
+
+### 9.1 问题现象
+
+macOS / Windows 用户「在文件管理器里 Cmd+C / Ctrl+C 复制一个图片文件」后，手机端点「拉图片」会拿到**系统占位图标**（小尺寸缩略图），不是图片本身。同时点「拉文本」会拉到**文件名**。
+
+### 9.2 根因
+
+剪贴板里此时有几种格式并存：
+
+| 平台 | 文件引用格式 | 位图格式 |
+|---|---|---|
+| macOS | `public.file-url` | 系统生成的低分辨率占位图 |
+| Windows | `CF_HDROP` | 系统生成的图标位图 |
+| Linux | `text/uri-list` | 通常没有位图 |
+
+arboard 的 `Clipboard::get_image()` 拿到的是位图格式，所以返回的是占位图标。文件名则是文件路径被当文本读到的副作用。
+
+### 9.3 解决方案
+
+`read_image_png_base64` 内部优先调 `cb.get().file_list()`（arboard 3.4+ 跨平台 API）：
+
+```rust
+if let Ok(paths) = cb.get().file_list() {
+    for path in paths {
+        if let Ok(bytes) = std::fs::read(&path) {
+            if image::guess_format(&bytes).is_ok() {
+                let (w, h, rgba) = decode_bytes_to_rgba(&bytes)?;
+                let b64 = encode_rgba_to_png_base64(w, h, &rgba)?;
+                return Ok(Some(("image/png".to_string(), b64)));
+            }
+        }
+    }
+}
+// 降级：直接读位图（截图、应用内 Ctrl+C 复制图片）
+let img = cb.get_image()?;
+```
+
+降级到 `get_image()` 的场景：
+- 剪贴板里没有文件（用户用截图工具直接复制位图到剪贴板）
+- 文件不是图片（例如复制了一个 `.txt` 文件，本函数会跳过，最终可能返回位图或空）
+
+### 9.4 macOS 截图快捷键
+
+`Cmd+Shift+4` 默认把截图**存到桌面文件**，剪贴板是空的。要进剪贴板必须加 Ctrl：`Ctrl+Cmd+Shift+4`。这个不是 qrctrl 能控制的，README 里以 tip 形式提示用户。
+
+---
+
+## 十、任意文件传输（设计草稿，未实施）
+
+### 10.1 目标
+
+不再区分文本 / 图片 / 文件，统一为「文件通道」。手机 ↔ PC 可以传任意类型的文件。
+
+### 10.2 实现路径
+
+**路径 A：复用现有 WS + base64（< 10 MB 友好）**
+
+协议加 `set_file` / `get_file`，元信息含 `name` + `mime` + `data`(base64)：
+```json
+{"type":"set_file","name":"report.pdf","mime":"application/pdf","data":"<base64>"}
+{"type":"get_file"}
+{"type":"file","name":"report.pdf","mime":"application/pdf","data":"<base64>"}
+```
+
+- 优点：完全复用现有架构，与图片通道模式一致
+- 缺点：内存峰值 = 文件大小 × 1.33（base64），单条 WS 消息默认 64 MB 上限，实际能传 ~30 MB 文件
+
+**路径 B：HTTP 流式端点（支持 GB 级）**
+
+新增路由：
+- `POST /upload?t=<token>` 流式接收，写盘到临时目录或下载目录
+- `GET /download?t=<token>&id=<id>` 流式发送
+
+- 优点：内存恒定，任意大小
+- 缺点：要写文件存储管理（保存目录、清理）、前端走 `fetch` + `Blob` 不再走 WS、token 鉴权要扩到 HTTP 路由
+
+### 10.3 关键决策点
+
+| 问题 | 候选 | 备注 |
+|---|---|---|
+| 文件大小目标 | 10 MB / 100 MB / GB 级 | 决定路径 A vs B |
+| PC 端保存目录 | `~/Downloads/qrctrl/` 默认 / 启动参数 `--save-dir` / 用户选择 | 默认下载目录最省心，文件名带时间戳避免覆盖 |
+| 图片通道是否合并 | 合并（拉文件时若 MIME 是 image/* 自动预览）/ 保留独立 | 合并后协议更简洁，但图片专用预览 modal 还要保留分支 |
+| 手机端 UI | 统一一个「文件」按钮 / 分文本+图片+文件三个 | 分三个更直观 |
+| 大文件进度反馈 | WS 单条消息无法做进度 / 走 HTTP 后用 fetch ProgressEvent | 路径 A 只能发前 toast「上传中…」 |
+
+### 10.4 当前推荐方案
+
+走**路径 A**，保留**图片通道**作为独立 UI：
+
+- 用户场景里 99% 的文件（PDF / 文档 / 小压缩包）都在 10 MB 内
+- 实施成本低，跟现有图片通道完全对称
+- 图片有预览价值（modal 弹出），普通文件没有，两种语义分开更清晰
+
+如果未来出现明确的大文件需求（比如传视频），再做路径 B。
+
+### 10.5 待定协议（路径 A 实施）
+
+```json
+// 手机 → PC：上传文件
+{"type":"set_file","name":"notes.txt","mime":"text/plain","data":"<base64>"}
+// 响应
+{"type":"ok"}
+{"type":"error","code":"too_large|decode_failed|write_failed"}
+
+// 手机 → PC：拉取文件（从 PC 默认下载目录拉最新？或文件列表？）
+{"type":"list_files"}
+{"type":"file_list","files":[{"name":"...","size":1024,"mime":"..."}]}
+{"type":"get_file","name":"notes.txt"}
+{"type":"file","name":"notes.txt","mime":"text/plain","data":"<base64>"}
+```
+
+PC → 手机方向的「拉文件」语义不明确：PC 上没有「当前剪贴板文件」的概念。可能的方案：
+
+- A1：手机列出 PC 端 `~/Downloads/qrctrl/` 目录的文件，让用户选
+- A2：复用 `file_list()`——读剪贴板里的文件引用，跨平台（用户在 PC 上 Cmd+C 一个文件，手机能拉到）
+
+A2 更符合现有「剪贴板同步」的语义。如果走 A2，**现有 `read_image_png_base64` 的 file_list 路径其实已经覆盖了一半**——只要把「仅图片」的过滤去掉，任何文件都拉过来即可。手机端按 MIME 分发：image → 预览；其他 → 下载链接。
+

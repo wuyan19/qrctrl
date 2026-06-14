@@ -4,7 +4,14 @@
 
 ## 项目概述
 
-qrctrl 是一个用 Rust 编写的跨平台远程输入工具。手机扫码连接后，将手机上输入的文字（语音转写、键盘打字、emoji 等）通过 WebSocket 发送到 PC，PC 端用 enigo 注入到当前焦点窗口。命名取「QR + Control」，未来扩展到快捷键、鼠标等控制类指令。
+qrctrl 是一个用 Rust 编写的跨平台远程输入工具。手机扫码连接后：
+
+- **文本注入**（手机 → PC）：手机上输入的文字（语音转写、键盘打字、emoji 等）通过 WebSocket 发送，PC 端用 enigo 注入到当前焦点窗口。
+- **双向剪贴板同步**：
+  - PC → 手机：拉取 PC 剪贴板的文本/图片，在手机端拿到（文本写剪贴板或 textarea 兜底；图片弹预览模态）。
+  - 手机 → PC 图片：手机端选图或粘贴截图，PC 用 arboard 写入剪贴板。
+
+命名取「QR + Control」，未来扩展到快捷键、鼠标、任意文件等控制类指令。
 
 ## 构建与运行命令
 
@@ -23,15 +30,17 @@ cargo install --path .         # 本地安装
 
 **模块职责：**
 
-- **`main.rs`** — 程序入口。生成 token、初始化 enigo、构造 AppState、装配 axum 路由（`/` 返回静态 HTML、`/ws` 升级 WebSocket）、绑定端口、生成扫码 URL、调用 qr 模块渲染二维码到终端。token 嵌入 URL 查询参数，未带 token 或 token 不匹配时 WebSocket 升级返回 401。
+- **`main.rs`** — 程序入口。生成 token、初始化 enigo + 剪贴板句柄、构造 AppState、装配 axum 路由（`/` 返回静态 HTML、`/ws` 升级 WebSocket）、绑定端口、生成扫码 URL、调用 qr 模块渲染二维码到终端。token 嵌入 URL 查询参数，未带 token 或 token 不匹配时 WebSocket 升级返回 401。
 
 - **`token.rs`** — 生成一次性随机 token（字母数字组合），用于扫码 URL 鉴权。
 
-- **`state.rs`** — `AppState` 结构体，包含 `token: String` 和 `enigo: Arc<Mutex<Enigo>>`。`#[derive(Clone)]` 满足 axum State 的 Clone + Send + Sync 要求。enigo 用 `Arc<Mutex<...>>` 包裹，因为 macOS 上 Enigo 实现了 Send 但没实现 Sync，必须加 Mutex 才能跨线程共享（详见 `tests/send_sync_invariants.rs`）。
+- **`state.rs`** — `AppState` 结构体，包含 `token: String`、`enigo: Arc<Mutex<Enigo>>`、`clipboard: ClipboardHandle`（即 `Arc<Mutex<arboard::Clipboard>>`）。`#[derive(Clone)]` 满足 axum State 的 Clone + Send + Sync 要求。enigo 和 clipboard 用**独立 Mutex**——两件事无逻辑互斥关系；共用会拖慢（注入长文本期间无法读剪贴板）。两者都用 `Arc<Mutex<...>>` 包裹，因为 macOS 上 Enigo/Clipboard 都实现了 Send 但没实现 Sync（详见 `tests/send_sync_invariants.rs`）。
 
-- **`ws.rs`** — WebSocket 处理。`ws_handler` 校验 token，通过后升级连接。`handle_socket` 循环接收消息：文本消息通过 `tokio::task::spawn_blocking` 丢到阻塞线程池调用 enigo（enigo 的 `text()` 是阻塞调用，直接在 executor 上跑会卡异步运行时）；Close 或 Err 退出循环。
+- **`ws.rs`** — WebSocket 处理 + JSON 协议分发。`ws_handler` 校验 token；`handle_socket` 循环接收消息（文本指令通过 `dispatch` 处理后用 `socket.send()` 回包，Close 或 Err 退出）；`dispatch` 反序列化 JSON Command 并路由到对应处理器，所有阻塞调用（enigo.text / arboard.read / arboard.write）都通过 `tokio::task::spawn_blocking` 丢到阻塞线程池。Command 枚举用 `#[serde(tag = "type", rename_all = "snake_case")]`，4 个 variant：`Text` / `GetClipboardText` / `GetClipboardImage` / `SetClipboardImage`。
 
 - **`inject.rs`** — `inject_text(enigo, text)` 锁住 Mutex 后调用 `Enigo::text()` 注入文本。这是 enigo 的 Unicode 注入路径，**不依赖当前键盘布局或输入法状态**，跨平台一致。
+
+- **`clipboard.rs`** — arboard 包装。`ClipboardHandle = Arc<Mutex<arboard::Clipboard>>` 类型别名；纯函数 `decode_bytes_to_rgba` / `encode_rgba_to_png_base64` / `decode_base64`（不接触 arboard，便于单测）；副作用函数 `read_text` / `read_image_png_base64` / `write_image_from_bytes`（必须 spawn_blocking 调用）。`read_image_png_base64` 内部**优先调 `cb.get().file_list()`**：用户从 Finder / 资源管理器 Cmd+C 复制图片文件时，剪贴板里是文件引用而不是位图，`get_image()` 返回的是系统占位图标；只有文件列表为空或文件不是图片时才降级到 `get_image()`。常量：`MAX_PIXELS = 40_000_000`（解码后内存上限）、`MAX_IMG_B64 = 10_000_000`（base64 字符串上限）。
 
 - **`net.rs`** — `get_local_ipv4()` 找一个非 loopback 的局域网 IPv4 地址，用于生成扫码 URL。取不到时 main.rs 回退到 localhost。
 
@@ -45,19 +54,23 @@ cargo install --path .         # 本地安装
 
 - **传输层**：axum 0.8 提供 HTTP（`/` 返回静态 `index.html`，用 `include_str!` 编译期内联）和 WebSocket（`/ws`）。前端在 `static/index.html` 中实现，无前端构建链。
 - **鉴权**：扫码 URL 含 `?t=<token>`，前端解析后用于 WebSocket 升级请求。无 token 或 token 不匹配返回 401。token 在每次启动时随机生成。
+- **协议**：所有 WebSocket 消息都是 JSON，没有纯文本路径。server 和 client 同包发布（HTML 编译进 binary），无历史兼容包袱。请求字段：`{"type":"<cmd>", ...}`；响应类型：`ok` / `clipboard_text` / `clipboard_image` / `empty` / `error`（含 `code`）。
 - **enigo 线程模型**：`Arc<Mutex<Enigo>>` + `spawn_blocking`。在 macOS 上 Enigo 不实现 Sync（CoreFoundation 句柄不是 Sync），所以必须 Mutex 包裹；在 Windows/Linux 上 Enigo 实际实现了 Send + Sync，但代码统一用 Mutex 简化跨平台逻辑。
+- **arboard 线程模型**：与 enigo 同样模式，`Arc<Mutex<arboard::Clipboard>>` + `spawn_blocking`。macOS 上 Clipboard 同样仅 Send 不 Sync。
 - **平台权限**：macOS 首次启动需要授予「辅助功能」权限（系统设置 → 隐私与安全性），并允许防火墙入站（监听 0.0.0.0:8080 时弹窗）。Windows/Linux 无需特殊权限（Linux 需 X11 + libxtst）。每次重新编译后 macOS 可能需要重新授权（TCC 按签名指纹记录权限）。
 - **文本注入路径**：`Enigo::text()` 在 macOS 用 `CGEventCreateUnicodeString`、Windows 用 `SendInput` Unicode path、Linux 用 XTest 的 Unicode 键码。三种路径都绕过键盘布局，所以中文/emoji 直接出字，不需要切换输入法。
+- **图片传输**：手机 ↔ PC 之间用 base64 over JSON。前端 `<input type="file" accept="image/*">` 选图 + document 级 `paste` 监听（截图直接粘贴）；后端用 `image` crate 解码任意格式 → RGBA8 → 像素总数校验 → arboard 写入或 PNG 编码。
+- **大小限制**：文本 100 KB（超出截断，仍发送）；图片 base64 原文 10 MB（超出 `too_large`）；图片像素总数 ≤ 4000 万（防 RGBA 内存爆炸）。axum WebSocket 默认 `max_message_size = 64 MB`，无需调整。
 - **断线重连**：前端实现指数退避重连（1s → 2s → 4s → ... 上限 10s），后端无状态。
-- **平台条件编译**：当前代码无 `#[cfg]` 分支，enigo 库自己处理平台差异。Linux 上 enigo 需要 `libxtst-dev`、`libx11-dev`、`libxdo-dev`（CI 中已配置）。
-- **错误处理**：启动期错误（端口绑定失败、enigo 初始化失败）用 `expect` 直接 panic；运行时错误（WebSocket 错误、注入失败）用 `eprintln!` 记录后继续，不退出服务器。
+- **平台条件编译**：当前代码无 `#[cfg]` 分支，arboard / enigo 库自己处理平台差异。Linux 上 enigo 需要 `libxtst-dev`、`libx11-dev`、`libxdo-dev`（CI 中已配置）。
+- **错误处理**：启动期错误（端口绑定失败、enigo/clipboard 初始化失败）用 `expect` 直接 panic；运行时错误（WebSocket 错误、注入失败、剪贴板错误）用 `eprintln!` 记录后继续，不退出服务器。`CbError` 映射为协议错误码字符串（`empty` / `clipboard_busy` / `decode_failed` / `too_large` / `internal`）。
 
 ## 扩展计划
 
-当前只支持文本注入。未来计划扩展（详见 `docs/research.md`）：
+当前已实现：文本注入、双向文本/图片剪贴板同步、JSON 协议（统一，无旧版兼容）。未来计划扩展（详见 `docs/research.md`）：
 
 - 快捷键序列（如 `Cmd+Space`、`Win+R`）
 - 鼠标移动和点击（绝对 / 相对坐标）
 - 滚轮
-- 协议从纯文本升级为 JSON 指令，向后兼容
+- **任意文件传输**（不再区分文本/图片/文件，统一文件通道——大文件需要走 HTTP 端点，详见 `docs/research.md` 第十节）
 - 安全考虑：快捷键白名单或二次确认机制
