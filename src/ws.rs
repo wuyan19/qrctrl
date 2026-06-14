@@ -41,6 +41,12 @@ pub async fn ws_handler(
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
     println!("[ws] 客户端已连接");
+    // 升级后立刻推送设备名，前端用于状态栏显示
+    let info = server_info_json(&state.name);
+    if socket.send(Message::Text(info.into())).await.is_err() {
+        println!("[ws] 发送 server_info 失败，断开");
+        return;
+    }
     while let Some(msg) = socket.recv().await {
         match msg {
             Ok(Message::Text(text)) => {
@@ -151,6 +157,10 @@ fn clipboard_text_json(content: String) -> String {
 
 fn clipboard_image_json(mime: String, data: String) -> String {
     serde_json::json!({"type": "clipboard_image", "mime": mime, "data": data}).to_string()
+}
+
+fn server_info_json(name: &str) -> String {
+    serde_json::json!({"type": "server_info", "name": name}).to_string()
 }
 
 #[cfg(test)]

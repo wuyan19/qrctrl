@@ -7,6 +7,7 @@ use crate::clipboard::ClipboardHandle;
 #[derive(Clone)]
 pub struct AppState {
     pub token: String,
+    pub name: String,
     pub enigo: Arc<Mutex<Enigo>>,
     pub clipboard: ClipboardHandle,
 }

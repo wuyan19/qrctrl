@@ -219,6 +219,7 @@ let toastTimer = null;
 let autoSendTimer = null;
 let isComposing = false;
 let lastSentType = null;
+let deviceName = 'PC';
 
 function setStatus(s, connected) {
   statusText.textContent = s;
@@ -246,32 +247,36 @@ function connect() {
   setStatus('连接中...', false);
   ws = new WebSocket(wsUrl);
   ws.onopen = () => {
-    setStatus('已连接', true);
+    // 不立即 setStatus——等 server_info 推过来再显示设备名，避免「PC 已连接」闪一下
     sendBtn.disabled = false;
     reconnectDelay = 1000;
   };
   ws.onclose = () => {
-    setStatus('已断开 · ' + Math.round(reconnectDelay / 1000) + 's 后重连', false);
+    setStatus(`${deviceName} 已断开 · ${Math.round(reconnectDelay / 1000)}s 后重连`, false);
     sendBtn.disabled = true;
     setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 10000);
   };
   ws.onerror = () => {
-    setStatus('连接错误', false);
+    setStatus(`${deviceName} 连接错误`, false);
   };
   ws.onmessage = (ev) => {
     let m;
     try { m = JSON.parse(ev.data); } catch { return; }
     switch (m.type) {
+      case 'server_info':
+        deviceName = m.name || 'PC';
+        setStatus(`${deviceName} 已连接`, true);
+        break;
       case 'ok':
-        // 文本注入不弹 toast（用户能直接看到 PC 焦点窗口出字，频繁 toast 反而烦）
+        // 文本注入不弹 toast（用户能直接看到焦点窗口出字，频繁 toast 反而烦）
         if (lastSentType === 'set_clipboard_image') {
-          toast('已写入 PC 剪贴板');
+          toast(`已写入 ${deviceName} 剪贴板`);
         }
         break;
       case 'clipboard_text':  onPullText(m.content); break;
       case 'clipboard_image': onPullImage(m.data, m.mime); break;
-      case 'empty':           toast('PC 剪贴板为空'); break;
+      case 'empty':           toast(`${deviceName} 剪贴板为空`); break;
       case 'error':           toast('失败：' + (m.code || 'unknown')); break;
     }
   };
