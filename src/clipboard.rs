@@ -119,14 +119,32 @@ pub fn read_text(h: &ClipboardHandle) -> Result<Option<String>, CbError> {
 }
 
 /// 读剪贴板图片并编码为 PNG base64。返回 Ok(None) 表示空 / 无图片格式。
+///
+/// 优先级：剪贴板文件列表（macOS Finder Cmd+C 复制图片文件 / Windows
+/// 资源管理器复制图片）→ 剪贴板位图（截图工具、应用内复制图片）。
+/// 直接读位图在「复制文件」场景下拿到的是占位图标，所以必须先看文件列表。
 pub fn read_image_png_base64(h: &ClipboardHandle) -> Result<Option<(String, String)>, CbError> {
-    let img = {
-        let mut cb = h.lock().map_err(|e| CbError::Unknown(format!("lock: {}", e)))?;
-        match cb.get_image() {
-            Ok(img) => img,
-            Err(arboard::Error::ContentNotAvailable) => return Ok(None),
-            Err(e) => return Err(map_err(e)),
+    let mut cb = h.lock().map_err(|e| CbError::Unknown(format!("lock: {}", e)))?;
+
+    // 优先：检查文件列表。复制图片文件场景下，剪贴板里是文件引用而不是位图。
+    // 直接 get_image() 会返回系统生成的占位图标（小尺寸），不是真实图片内容。
+    if let Ok(paths) = cb.get().file_list() {
+        for path in paths {
+            if let Ok(bytes) = std::fs::read(&path) {
+                if image::guess_format(&bytes).is_ok() {
+                    let (w, h, rgba) = decode_bytes_to_rgba(&bytes)?;
+                    let b64 = encode_rgba_to_png_base64(w, h, &rgba)?;
+                    return Ok(Some(("image/png".to_string(), b64)));
+                }
+            }
         }
+        // 文件列表里没有图片文件 → 降级到 get_image()
+    }
+
+    let img = match cb.get_image() {
+        Ok(img) => img,
+        Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+        Err(e) => return Err(map_err(e)),
     };
     let w = img.width;
     let h = img.height;
