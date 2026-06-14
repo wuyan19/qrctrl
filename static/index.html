@@ -77,11 +77,70 @@
     padding: 14px 18px;
     border: 1px solid #0071e3;
   }
+  .row.tools button {
+    background: #f0f0f3;
+    color: #1d1d1f;
+    font-size: 14px;
+    padding: 12px 8px;
+  }
+  .row.tools button:active {
+    background: #e0e0e5;
+  }
   .hint {
     margin-top: 12px;
     font-size: 12px;
     color: #6e6e73;
     text-align: center;
+  }
+  #toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.85);
+    color: #fff;
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-size: 14px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s;
+    z-index: 100;
+    max-width: 90vw;
+    text-align: center;
+  }
+  #toast.show { opacity: 1; }
+  .modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.9);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    padding: 16px;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .modal.show { display: flex; }
+  .modal img {
+    max-width: 100%;
+    max-height: 75vh;
+    object-fit: contain;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .modal-hint {
+    color: #ccc;
+    font-size: 13px;
+    text-align: center;
+  }
+  .modal button {
+    flex: 0 0 auto;
+    width: auto;
+    padding: 10px 32px;
+    background: #0071e3;
+    color: #fff;
   }
 </style>
 </head>
@@ -90,30 +149,70 @@
   <span class="dot"></span>
   <span id="status-text">连接中...</span>
 </div>
-<textarea id="text" placeholder="点击这里用语音输入..." autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>
+<textarea id="text" placeholder="点击这里输入文本，或粘贴截图..." autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>
 <div class="row">
   <button id="send" disabled>发送</button>
   <button id="clear" class="secondary">清空</button>
 </div>
+<div class="row tools">
+  <button id="btn-pull-text">📋 拉文本</button>
+  <button id="btn-pull-image">🖼 拉图片</button>
+  <button id="btn-pick-image">📷 选图上传</button>
+</div>
+<input id="file-pick" type="file" accept="image/*" hidden>
 <div class="hint">回车发送 · Shift+Enter 换行 · 断线自动重连</div>
+
+<div id="img-modal" class="modal">
+  <img id="modal-img" alt="clipboard preview">
+  <div class="modal-hint">长按图片可复制 / 保存到相册</div>
+  <button id="modal-close">关闭</button>
+</div>
+
+<div id="toast"></div>
 
 <script>
 const token = new URLSearchParams(location.search).get('t') || '';
 const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
 const wsUrl = `${proto}//${location.host}/ws?t=${encodeURIComponent(token)}`;
+const MAX_IMG_B64 = 10_000_000;
 
 const statusEl = document.getElementById('status');
 const statusText = document.getElementById('status-text');
 const textEl = document.getElementById('text');
 const sendBtn = document.getElementById('send');
 const clearBtn = document.getElementById('clear');
+const pullTextBtn = document.getElementById('btn-pull-text');
+const pullImageBtn = document.getElementById('btn-pull-image');
+const pickImageBtn = document.getElementById('btn-pick-image');
+const filePick = document.getElementById('file-pick');
+const modal = document.getElementById('img-modal');
+const modalImg = document.getElementById('modal-img');
+const modalClose = document.getElementById('modal-close');
+const toastEl = document.getElementById('toast');
 
 let ws = null;
 let reconnectDelay = 1000;
+let toastTimer = null;
 
 function setStatus(s, connected) {
   statusText.textContent = s;
   statusEl.className = 'status ' + (connected ? 'connected' : 'disconnected');
+}
+
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2000);
+}
+
+function send(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
+    return true;
+  }
+  toast('未连接');
+  return false;
 }
 
 function connect() {
@@ -133,25 +232,129 @@ function connect() {
   ws.onerror = () => {
     setStatus('连接错误', false);
   };
+  ws.onmessage = (ev) => {
+    let m;
+    try { m = JSON.parse(ev.data); } catch { return; }
+    switch (m.type) {
+      case 'ok':              toast('已写入 PC 剪贴板'); break;
+      case 'clipboard_text':  onPullText(m.content); break;
+      case 'clipboard_image': onPullImage(m.data, m.mime); break;
+      case 'empty':           toast('PC 剪贴板为空'); break;
+      case 'error':           toast('失败：' + (m.code || 'unknown')); break;
+    }
+  };
 }
 connect();
 
-function send() {
+// 发送文本（统一 JSON 协议）
+function sendText() {
   const text = textEl.value;
   if (!text.trim()) return;
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(text);
+  if (send({ type: 'text', value: text })) {
     textEl.value = '';
   }
 }
 
-sendBtn.addEventListener('click', send);
-clearBtn.addEventListener('click', () => { textEl.value = ''; });
+// 双 API 降级写入手机剪贴板。
+async function copyToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return true; } catch {}
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch {}
+  document.body.removeChild(ta);
+  return ok;
+}
 
+// PC → 手机 文本
+async function onPullText(content) {
+  const ok = await copyToClipboard(content);
+  if (ok) {
+    toast('已复制到手机剪贴板');
+  } else {
+    // 兜底：写入主 textarea 并全选
+    textEl.value = content;
+    textEl.focus();
+    textEl.select();
+    toast('已写入输入框，点复制按钮');
+  }
+}
+
+// PC → 手机 图片
+function onPullImage(b64, mime) {
+  modalImg.src = `data:${mime};base64,${b64}`;
+  modal.classList.add('show');
+}
+
+// 大 base64 分块编码，避免 fromCharCode 栈溢出。
+async function fileToB64(file) {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+async function uploadImage(file) {
+  if (!file.type.startsWith('image/')) {
+    toast('只支持图片');
+    return;
+  }
+  try {
+    const b64 = await fileToB64(file);
+    if (b64.length > MAX_IMG_B64) {
+      toast('图片太大（>10MB）');
+      return;
+    }
+    send({ type: 'set_clipboard_image', data: b64 });
+    toast('上传中...');
+  } catch (e) {
+    toast('读取文件失败');
+  }
+}
+
+// 按钮绑定
+sendBtn.addEventListener('click', sendText);
+clearBtn.addEventListener('click', () => { textEl.value = ''; });
 textEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    send();
+    sendText();
+  }
+});
+pullTextBtn.addEventListener('click', () => send({ type: 'get_clipboard_text' }));
+pullImageBtn.addEventListener('click', () => send({ type: 'get_clipboard_image' }));
+pickImageBtn.addEventListener('click', () => filePick.click());
+filePick.addEventListener('change', () => {
+  if (filePick.files && filePick.files[0]) {
+    uploadImage(filePick.files[0]);
+    filePick.value = '';
+  }
+});
+modalClose.addEventListener('click', () => modal.classList.remove('show'));
+modal.addEventListener('click', (e) => {
+  if (e.target === modal) modal.classList.remove('show');
+});
+
+// 粘贴截图监听（绑 document，覆盖任意焦点）
+document.addEventListener('paste', async (e) => {
+  const items = e.clipboardData?.items || [];
+  for (const it of items) {
+    if (it.kind === 'file' && it.type.startsWith('image/')) {
+      e.preventDefault();
+      uploadImage(it.getAsFile());
+      return;
+    }
   }
 });
 </script>

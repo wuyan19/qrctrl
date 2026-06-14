@@ -1,3 +1,4 @@
+mod clipboard;
 mod inject;
 mod net;
 mod qr;
@@ -18,9 +19,11 @@ const INDEX_HTML: &str = include_str!("../static/index.html");
 async fn main() {
     let token = token::generate_token();
     let enigo = Enigo::new(&Settings::default()).expect("Enigo 初始化失败");
+    let cb = clipboard::new_handle().expect("剪贴板初始化失败");
     let state = AppState {
         token: token.clone(),
         enigo: Arc::new(Mutex::new(enigo)),
+        clipboard: cb,
     };
 
     let app = Router::new()
