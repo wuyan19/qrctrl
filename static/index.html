@@ -182,7 +182,7 @@
   <button id="btn-pick-image">📷 选图上传</button>
 </div>
 <input id="file-pick" type="file" accept="image/*" hidden>
-<div class="hint">回车发送 · Shift+Enter 换行 · 断线自动重连</div>
+<div class="hint">回车换行 · 点「发送」按钮提交 · 断线自动重连</div>
 
 <div id="img-modal" class="modal">
   <img id="modal-img" alt="clipboard preview">
@@ -381,12 +381,6 @@ async function uploadImage(file) {
 // 按钮绑定
 sendBtn.addEventListener('click', sendText);
 clearBtn.addEventListener('click', () => { cancelAutoSend(); textEl.value = ''; });
-textEl.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    sendText();
-  }
-});
 textEl.addEventListener('compositionstart', () => { isComposing = true; });
 textEl.addEventListener('compositionend', () => {
   isComposing = false;
