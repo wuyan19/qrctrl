@@ -160,6 +160,106 @@
     background: #0071e3;
     color: #fff;
   }
+  #transfer-modal {
+    background: rgba(0,0,0,0.92);
+    color: #fff;
+    gap: 20px;
+    text-align: center;
+  }
+  #transfer-modal .transfer-title {
+    font-size: 15px;
+    word-break: break-all;
+    max-width: 90vw;
+  }
+  #transfer-modal progress {
+    width: 80vw;
+    max-width: 360px;
+    height: 8px;
+    -webkit-appearance: none;
+    appearance: none;
+    border: none;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  #transfer-modal progress::-webkit-progress-bar {
+    background: rgba(255,255,255,0.15);
+    border-radius: 4px;
+  }
+  #transfer-modal progress::-webkit-progress-value {
+    background: #0071e3;
+    border-radius: 4px;
+    transition: width 0.15s;
+  }
+  #transfer-modal .transfer-stats {
+    font-size: 13px;
+    color: #ccc;
+    font-variant-numeric: tabular-nums;
+  }
+  #transfer-cancel {
+    background: #444;
+    color: #fff;
+    padding: 8px 24px;
+    font-size: 14px;
+  }
+  #file-list-modal {
+    background: rgba(0,0,0,0.6);
+  }
+  #file-list-modal .file-list-card {
+    background: #fff;
+    color: #1d1d1f;
+    border-radius: 14px;
+    padding: 16px;
+    width: 86vw;
+    max-width: 380px;
+    max-height: 75vh;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .file-list-title {
+    font-size: 15px;
+    font-weight: 600;
+    text-align: center;
+  }
+  .file-list-items {
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .file-list-item {
+    padding: 12px;
+    border: 1px solid #d2d2d7;
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    cursor: pointer;
+    text-align: left;
+    background: #fff;
+    font-size: 14px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .file-list-item:active {
+    background: #f0f0f3;
+  }
+  .file-list-item .name {
+    font-weight: 500;
+    word-break: break-all;
+  }
+  .file-list-item .meta {
+    color: #6e6e73;
+    font-size: 12px;
+  }
+  #file-list-close {
+    width: auto;
+    align-self: center;
+    padding: 10px 32px;
+    background: #f0f0f3;
+    color: #1d1d1f;
+    font-size: 14px;
+  }
 </style>
 </head>
 <body>
@@ -179,15 +279,35 @@
 <div class="row tools">
   <button id="btn-pull-text">📋 拉文本</button>
   <button id="btn-pull-image">🖼 拉图片</button>
+  <button id="btn-pull-file">📎 拉文件</button>
+</div>
+<div class="row tools">
   <button id="btn-pick-image">📷 选图上传</button>
+  <button id="btn-send-file">📁 发送文件</button>
 </div>
 <input id="file-pick" type="file" accept="image/*" hidden>
+<input id="file-send" type="file" hidden>
 <div class="hint">回车换行 · 点「发送」按钮提交 · 断线自动重连</div>
 
 <div id="img-modal" class="modal">
   <img id="modal-img" alt="clipboard preview">
   <div class="modal-hint">长按图片可复制 / 保存到相册</div>
   <button id="modal-close">关闭</button>
+</div>
+
+<div id="transfer-modal" class="modal">
+  <div class="transfer-title" id="transfer-title">传输中...</div>
+  <progress id="transfer-progress" value="0" max="1"></progress>
+  <div class="transfer-stats" id="transfer-stats">0 / 0</div>
+  <button id="transfer-cancel">取消</button>
+</div>
+
+<div id="file-list-modal" class="modal">
+  <div class="file-list-card">
+    <div class="file-list-title">选择要下载的文件</div>
+    <div class="file-list-items" id="file-list-items"></div>
+    <button id="file-list-close">取消</button>
+  </div>
 </div>
 
 <div id="toast"></div>
@@ -206,10 +326,21 @@ const clearBtn = document.getElementById('clear');
 const pullTextBtn = document.getElementById('btn-pull-text');
 const pullImageBtn = document.getElementById('btn-pull-image');
 const pickImageBtn = document.getElementById('btn-pick-image');
+const sendFileBtn = document.getElementById('btn-send-file');
+const pullFileBtn = document.getElementById('btn-pull-file');
 const filePick = document.getElementById('file-pick');
+const fileSend = document.getElementById('file-send');
 const modal = document.getElementById('img-modal');
 const modalImg = document.getElementById('modal-img');
 const modalClose = document.getElementById('modal-close');
+const transferModal = document.getElementById('transfer-modal');
+const transferTitle = document.getElementById('transfer-title');
+const transferProgress = document.getElementById('transfer-progress');
+const transferStats = document.getElementById('transfer-stats');
+const transferCancel = document.getElementById('transfer-cancel');
+const fileListModal = document.getElementById('file-list-modal');
+const fileListItems = document.getElementById('file-list-items');
+const fileListClose = document.getElementById('file-list-close');
 const toastEl = document.getElementById('toast');
 const autoSendChk = document.getElementById('auto-send');
 
@@ -220,6 +351,8 @@ let autoSendTimer = null;
 let isComposing = false;
 let lastSentType = null;
 let deviceName = 'PC';
+let pendingUploadFile = null;
+let currentUploadXHR = null;
 
 function setStatus(s, connected) {
   statusText.textContent = s;
@@ -276,6 +409,8 @@ function connect() {
         break;
       case 'clipboard_text':  onPullText(m.content); break;
       case 'clipboard_image': onPullImage(m.data, m.mime); break;
+      case 'upload_ready':    onUploadReady(m.url); break;
+      case 'file_list':       onFileList(m.files); break;
       case 'empty':           toast(`${deviceName} 剪贴板为空`); break;
       case 'error':           toast('失败：' + (m.code || 'unknown')); break;
     }
@@ -400,6 +535,137 @@ modalClose.addEventListener('click', () => modal.classList.remove('show'));
 modal.addEventListener('click', (e) => {
   if (e.target === modal) modal.classList.remove('show');
 });
+
+// ===== 文件传输 =====
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+function showTransfer(title, received, total) {
+  transferTitle.textContent = title;
+  transferProgress.value = total > 0 ? received / total : 0;
+  transferStats.textContent = `${formatSize(received)} / ${formatSize(total)}`;
+  transferModal.classList.add('show');
+}
+
+function hideTransfer() {
+  transferModal.classList.remove('show');
+}
+
+// 服务端确认上传 → 启动 XHR 上传
+function onUploadReady(url) {
+  const file = pendingUploadFile;
+  pendingUploadFile = null;
+  if (!file) {
+    toast('没有待上传的文件');
+    return;
+  }
+
+  const xhr = new XMLHttpRequest();
+  currentUploadXHR = xhr;
+  showTransfer(`上传 ${file.name}`, 0, file.size);
+
+  xhr.upload.onprogress = (e) => {
+    if (e.lengthComputable) {
+      showTransfer(`上传 ${file.name}`, e.loaded, e.total);
+    }
+  };
+  xhr.onload = () => {
+    currentUploadXHR = null;
+    hideTransfer();
+    if (xhr.status === 200) {
+      toast(`已上传 ${file.name}`);
+    } else if (xhr.status === 413) {
+      toast('文件太大（超过 PC 端上限）');
+    } else {
+      toast(`上传失败 (${xhr.status})`);
+    }
+  };
+  xhr.onerror = () => {
+    currentUploadXHR = null;
+    hideTransfer();
+    toast('上传失败（网络错误）');
+  };
+  xhr.open('POST', url);
+  xhr.send(file);
+}
+
+// 服务端返回 file 元信息 → 交给浏览器原生下载接管
+function onFileMeta(m) {
+  const a = document.createElement('a');
+  a.href = m.url;
+  a.download = m.name;
+  a.target = '_blank';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  toast(`正在下载 ${m.name}…`);
+}
+
+// 服务端返回 file_list → 单文件直接下载，多文件弹列表让用户选
+function onFileList(files) {
+  if (!files || files.length === 0) {
+    toast(`${deviceName} 剪贴板为空`);
+    return;
+  }
+  if (files.length === 1) {
+    onFileMeta(files[0]);
+    return;
+  }
+  showFilePicker(files);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function showFilePicker(files) {
+  fileListItems.innerHTML = '';
+  files.forEach((f) => {
+    const item = document.createElement('div');
+    item.className = 'file-list-item';
+    item.innerHTML = `<div class="name">${escapeHtml(f.name)}</div><div class="meta">${escapeHtml(formatSize(f.size))} · ${escapeHtml(f.mime || '')}</div>`;
+    item.addEventListener('click', () => {
+      hideFilePicker();
+      onFileMeta(f);
+    });
+    fileListItems.appendChild(item);
+  });
+  fileListModal.classList.add('show');
+}
+
+function hideFilePicker() {
+  fileListModal.classList.remove('show');
+}
+
+fileListClose.addEventListener('click', hideFilePicker);
+fileListModal.addEventListener('click', (e) => {
+  if (e.target === fileListModal) hideFilePicker();
+});
+
+transferCancel.addEventListener('click', () => {
+  if (currentUploadXHR) {
+    currentUploadXHR.abort();
+    currentUploadXHR = null;
+  }
+  pendingUploadFile = null;
+  hideTransfer();
+});
+
+sendFileBtn.addEventListener('click', () => fileSend.click());
+fileSend.addEventListener('change', () => {
+  const f = fileSend.files && fileSend.files[0];
+  if (!f) return;
+  fileSend.value = '';
+  pendingUploadFile = f;
+  send({ type: 'upload_start', name: f.name, size: f.size, mime: f.type || '' });
+});
+pullFileBtn.addEventListener('click', () => send({ type: 'get_file' }));
 
 // 粘贴截图监听（绑 document，覆盖任意焦点）
 document.addEventListener('paste', async (e) => {

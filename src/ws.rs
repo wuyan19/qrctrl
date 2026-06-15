@@ -9,15 +9,11 @@ use axum::{
 use serde::Deserialize;
 
 use crate::clipboard;
+use crate::file_transfer::{self, UploadMeta};
 use crate::inject;
-use crate::state::AppState;
+use crate::state::{AppState, TokenQuery};
 
 const MAX_TEXT_BYTES: usize = 100 * 1024;
-
-#[derive(Deserialize)]
-pub struct WsQuery {
-    pub t: String,
-}
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -26,11 +22,13 @@ enum Command {
     GetClipboardText,
     GetClipboardImage,
     SetClipboardImage { data: String },
+    UploadStart { name: String, size: u64, mime: String },
+    GetFile,
 }
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
-    Query(q): Query<WsQuery>,
+    Query(q): Query<TokenQuery>,
     State(state): State<AppState>,
 ) -> Result<Response, StatusCode> {
     if q.t != state.token {
@@ -125,6 +123,59 @@ async fn dispatch(state: &AppState, raw: &str) -> String {
                 Err(_) => error_json("internal"),
             }
         }
+        Command::UploadStart { name, size, mime } => {
+            if size > state.max_size {
+                return error_json("too_large");
+            }
+            let _ = mime; // 协议保留字段，服务端写盘时不需要
+            let clean = match file_transfer::sanitize_filename(&name) {
+                Some(n) => n,
+                None => return error_json("forbidden_name"),
+            };
+            let meta = UploadMeta {
+                name: clean,
+                size,
+                created_at: std::time::Instant::now(),
+            };
+            let id = state.registry.register_upload(meta);
+            let url = format!("/upload/{}?t={}", id, state.token);
+            upload_ready_json(&id, &url)
+        }
+        Command::GetFile => {
+            let cb = state.clipboard.clone();
+            let result = tokio::task::spawn_blocking(move || clipboard::read_file_list(&cb)).await;
+            match result {
+                Ok(Ok(files)) if !files.is_empty() => {
+                    let files_json: Vec<serde_json::Value> = files
+                        .into_iter()
+                        .map(|fm| {
+                            let name = fm.name.clone();
+                            let size = fm.size;
+                            let mime = fm.mime.clone();
+                            let meta = file_transfer::DownloadMeta {
+                                path: fm.path,
+                                name: name.clone(),
+                                size,
+                                mime: mime.clone(),
+                                created_at: std::time::Instant::now(),
+                            };
+                            let id = state.registry.register_download(meta);
+                            let url = format!("/download/{}?t={}", id, state.token);
+                            serde_json::json!({
+                                "name": name,
+                                "size": size,
+                                "mime": mime,
+                                "url": url,
+                            })
+                        })
+                        .collect();
+                    file_list_json(files_json)
+                }
+                Ok(Ok(_)) => empty_json(),
+                Ok(Err(e)) => error_json(clipboard::error_code(&e)),
+                Err(_) => error_json("internal"),
+            }
+        }
     }
 }
 
@@ -157,6 +208,14 @@ fn clipboard_text_json(content: String) -> String {
 
 fn clipboard_image_json(mime: String, data: String) -> String {
     serde_json::json!({"type": "clipboard_image", "mime": mime, "data": data}).to_string()
+}
+
+fn upload_ready_json(id: &str, url: &str) -> String {
+    serde_json::json!({"type": "upload_ready", "id": id, "url": url}).to_string()
+}
+
+fn file_list_json(files: Vec<serde_json::Value>) -> String {
+    serde_json::json!({"type": "file_list", "files": files}).to_string()
 }
 
 fn server_info_json(name: &str) -> String {

@@ -5,6 +5,7 @@
 //! 便于单元测试（不接触系统剪贴板）。
 
 use std::borrow::Cow;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use base64::{engine::general_purpose, Engine as _};
@@ -164,6 +165,57 @@ pub fn write_image_from_bytes(handle: &ClipboardHandle, bytes: &[u8]) -> Result<
     })
     .map_err(map_err)?;
     Ok(())
+}
+
+/// 剪贴板里某个文件的元信息（绝对路径 + 显示用的纯文件名 + 大小 + MIME）。
+pub struct FileMeta {
+    pub path: PathBuf,
+    pub name: String,
+    pub size: u64,
+    pub mime: String,
+}
+
+/// 多文件拉取的上限，避免剪贴板里有几百个文件时协议炸 + 手机端列表巨长。
+const MAX_FILE_LIST: usize = 20;
+
+/// 读剪贴板里的文件引用，返回所有文件（最多 MAX_FILE_LIST 个）。空 Vec 表示无文件。
+///
+/// 不按扩展名过滤——用户点「📎 拉文件」就是想拿到原文件本身；想要图片预览
+/// 应该走「🖼 拉图片」专用通道。否则像 .ico / .bmp / .tiff / .svg 这类
+/// 被识别为图片但用户期望按文件下载的扩展名会被错误跳过。
+pub fn read_file_list(h: &ClipboardHandle) -> Result<Vec<FileMeta>, CbError> {
+    let mut cb = h.lock().map_err(|e| CbError::Unknown(format!("lock: {}", e)))?;
+    let paths = match cb.get().file_list() {
+        Ok(p) => p,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let mut out = Vec::new();
+    for path in paths {
+        if out.len() >= MAX_FILE_LIST {
+            break;
+        }
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let mime = mime_guess::from_path(&path)
+            .first_or_octet_stream()
+            .to_string();
+        out.push(FileMeta {
+            path,
+            name,
+            size: meta.len(),
+            mime,
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

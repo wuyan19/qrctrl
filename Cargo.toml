@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "fs", "io-util"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs"] }
 enigo = "0.6"
@@ -19,6 +19,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 hostname = "0.4"
+uuid = { version = "1", features = ["v4"] }
+dirs = "5"
+tokio-util = { version = "0.7", features = ["io"] }
+mime_guess = "2"
+futures-util = "0.3"
 
 [profile.release]
 opt-level = "z"
