@@ -778,11 +778,11 @@ textEl.addEventListener('compositionend', () => {
 });
 textEl.addEventListener('input', scheduleAutoSend);
 btnEnter.addEventListener('click', () => send({ type: 'enter' }));
-btnTab.addEventListener('click', () => { send({ type: 'tab' }); hideSheet(); });
-btnBackspace.addEventListener('click', () => { send({ type: 'backspace' }); hideSheet(); });
-pullTextBtn.addEventListener('click', () => { send({ type: 'get_clipboard_text' }); hideSheet(); });
-pullImageBtn.addEventListener('click', () => { send({ type: 'get_clipboard_image' }); hideSheet(); });
-pickImageBtn.addEventListener('click', () => { filePick.click(); hideSheet(); });
+btnTab.addEventListener('click', () => send({ type: 'tab' }));
+btnBackspace.addEventListener('click', () => send({ type: 'backspace' }));
+pullTextBtn.addEventListener('click', () => send({ type: 'get_clipboard_text' }));
+pullImageBtn.addEventListener('click', () => send({ type: 'get_clipboard_image' }));
+pickImageBtn.addEventListener('click', () => filePick.click());
 filePick.addEventListener('change', () => {
   if (filePick.files && filePick.files[0]) {
     uploadImage(filePick.files[0]);
@@ -790,7 +790,6 @@ filePick.addEventListener('change', () => {
   }
 });
 btnTools.addEventListener('click', () => toolPanel.classList.toggle('open'));
-function hideSheet() { toolPanel.classList.remove('open'); }
 modalClose.addEventListener('click', () => modal.classList.remove('show'));
 modal.addEventListener('click', (e) => {
   if (e.target === modal) modal.classList.remove('show');
@@ -813,7 +812,6 @@ const MOVE_MIN_MS = 30;
 const SCROLL_STEP = 3;
 
 btnTouchpad.addEventListener('click', () => {
-  hideSheet();
   syncTouchpadStatus();
   touchpadModal.classList.add('show');
 });
@@ -1002,7 +1000,7 @@ transferCancel.addEventListener('click', () => {
   hideTransfer();
 });
 
-sendFileBtn.addEventListener('click', () => { fileSend.click(); hideSheet(); });
+sendFileBtn.addEventListener('click', () => fileSend.click());
 fileSend.addEventListener('change', () => {
   const f = fileSend.files && fileSend.files[0];
   if (!f) return;
@@ -1010,7 +1008,7 @@ fileSend.addEventListener('change', () => {
   pendingUploadFile = f;
   send({ type: 'upload_start', name: f.name, size: f.size, mime: f.type || '' });
 });
-pullFileBtn.addEventListener('click', () => { send({ type: 'get_file' }); hideSheet(); });
+pullFileBtn.addEventListener('click', () => send({ type: 'get_file' }));
 
 // 粘贴截图监听（绑 document，覆盖任意焦点）
 document.addEventListener('paste', async (e) => {
