@@ -260,6 +260,54 @@
     color: #1d1d1f;
     font-size: 14px;
   }
+  #tool-sheet {
+    background: rgba(0,0,0,0.5);
+    align-items: flex-end;
+    padding: 0;
+  }
+  #tool-sheet .sheet-card {
+    background: #fff;
+    color: #1d1d1f;
+    border-radius: 16px 16px 0 0;
+    padding: 16px 14px calc(14px + env(safe-area-inset-bottom));
+    width: 100%;
+    max-width: 520px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .sheet-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .sheet-group-title {
+    font-size: 12px;
+    color: #6e6e73;
+    padding: 0 4px;
+  }
+  .sheet-row {
+    display: flex;
+    gap: 8px;
+  }
+  .sheet-row button {
+    background: #f0f0f3;
+    color: #1d1d1f;
+    font-size: 14px;
+    padding: 12px 8px;
+  }
+  .sheet-row button:active {
+    background: #e0e0e5;
+  }
+  #sheet-close {
+    width: auto;
+    align-self: center;
+    padding: 10px 36px;
+    background: #f0f0f3;
+    color: #1d1d1f;
+    font-size: 14px;
+    margin-top: 4px;
+  }
 </style>
 </head>
 <body>
@@ -274,16 +322,9 @@
 </label>
 <div class="row">
   <button id="send" disabled>发送</button>
-  <button id="clear" class="secondary">清空</button>
-</div>
-<div class="row tools">
-  <button id="btn-pull-text">📋 拉文本</button>
-  <button id="btn-pull-image">🖼 拉图片</button>
-  <button id="btn-pull-file">📎 拉文件</button>
-</div>
-<div class="row tools">
-  <button id="btn-pick-image">📷 选图上传</button>
-  <button id="btn-send-file">📁 发送文件</button>
+  <button id="btn-enter" class="secondary">⏎</button>
+  <button id="clear" class="secondary">🗑</button>
+  <button id="btn-tools" class="secondary">🛠</button>
 </div>
 <input id="file-pick" type="file" accept="image/*" hidden>
 <input id="file-send" type="file" hidden>
@@ -307,6 +348,34 @@
     <div class="file-list-title">选择要下载的文件</div>
     <div class="file-list-items" id="file-list-items"></div>
     <button id="file-list-close">取消</button>
+  </div>
+</div>
+
+<div id="tool-sheet" class="modal">
+  <div class="sheet-card">
+    <div class="sheet-group">
+      <div class="sheet-group-title">从 PC 拉取</div>
+      <div class="sheet-row">
+        <button id="btn-pull-text">📋 拉文本</button>
+        <button id="btn-pull-image">🖼 拉图片</button>
+        <button id="btn-pull-file">📎 拉文件</button>
+      </div>
+    </div>
+    <div class="sheet-group">
+      <div class="sheet-group-title">上传到 PC</div>
+      <div class="sheet-row">
+        <button id="btn-pick-image">📷 选图上传</button>
+        <button id="btn-send-file">📁 发送文件</button>
+      </div>
+    </div>
+    <div class="sheet-group">
+      <div class="sheet-group-title">注入按键</div>
+      <div class="sheet-row">
+        <button id="btn-tab">⇥ Tab</button>
+        <button id="btn-backspace">⌫ Backspace</button>
+      </div>
+    </div>
+    <button id="sheet-close">收起</button>
   </div>
 </div>
 
@@ -341,6 +410,12 @@ const transferCancel = document.getElementById('transfer-cancel');
 const fileListModal = document.getElementById('file-list-modal');
 const fileListItems = document.getElementById('file-list-items');
 const fileListClose = document.getElementById('file-list-close');
+const toolSheet = document.getElementById('tool-sheet');
+const sheetClose = document.getElementById('sheet-close');
+const btnTools = document.getElementById('btn-tools');
+const btnEnter = document.getElementById('btn-enter');
+const btnTab = document.getElementById('btn-tab');
+const btnBackspace = document.getElementById('btn-backspace');
 const toastEl = document.getElementById('toast');
 const autoSendChk = document.getElementById('auto-send');
 
@@ -522,15 +597,24 @@ textEl.addEventListener('compositionend', () => {
   scheduleAutoSend();
 });
 textEl.addEventListener('input', scheduleAutoSend);
-pullTextBtn.addEventListener('click', () => send({ type: 'get_clipboard_text' }));
-pullImageBtn.addEventListener('click', () => send({ type: 'get_clipboard_image' }));
-pickImageBtn.addEventListener('click', () => filePick.click());
+btnEnter.addEventListener('click', () => send({ type: 'enter' }));
+btnTab.addEventListener('click', () => { send({ type: 'tab' }); hideSheet(); });
+btnBackspace.addEventListener('click', () => { send({ type: 'backspace' }); hideSheet(); });
+pullTextBtn.addEventListener('click', () => { send({ type: 'get_clipboard_text' }); hideSheet(); });
+pullImageBtn.addEventListener('click', () => { send({ type: 'get_clipboard_image' }); hideSheet(); });
+pickImageBtn.addEventListener('click', () => { filePick.click(); hideSheet(); });
 filePick.addEventListener('change', () => {
   if (filePick.files && filePick.files[0]) {
     uploadImage(filePick.files[0]);
     filePick.value = '';
   }
 });
+btnTools.addEventListener('click', () => toolSheet.classList.add('show'));
+sheetClose.addEventListener('click', hideSheet);
+toolSheet.addEventListener('click', (e) => {
+  if (e.target === toolSheet) hideSheet();
+});
+function hideSheet() { toolSheet.classList.remove('show'); }
 modalClose.addEventListener('click', () => modal.classList.remove('show'));
 modal.addEventListener('click', (e) => {
   if (e.target === modal) modal.classList.remove('show');
@@ -657,7 +741,7 @@ transferCancel.addEventListener('click', () => {
   hideTransfer();
 });
 
-sendFileBtn.addEventListener('click', () => fileSend.click());
+sendFileBtn.addEventListener('click', () => { fileSend.click(); hideSheet(); });
 fileSend.addEventListener('change', () => {
   const f = fileSend.files && fileSend.files[0];
   if (!f) return;
@@ -665,7 +749,7 @@ fileSend.addEventListener('change', () => {
   pendingUploadFile = f;
   send({ type: 'upload_start', name: f.name, size: f.size, mime: f.type || '' });
 });
-pullFileBtn.addEventListener('click', () => send({ type: 'get_file' }));
+pullFileBtn.addEventListener('click', () => { send({ type: 'get_file' }); hideSheet(); });
 
 // 粘贴截图监听（绑 document，覆盖任意焦点）
 document.addEventListener('paste', async (e) => {

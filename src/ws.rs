@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -6,6 +8,7 @@ use axum::{
     http::StatusCode,
     response::Response,
 };
+use enigo::Enigo;
 use serde::Deserialize;
 
 use crate::clipboard;
@@ -24,6 +27,9 @@ enum Command {
     SetClipboardImage { data: String },
     UploadStart { name: String, size: u64, mime: String },
     GetFile,
+    Enter,
+    Tab,
+    Backspace,
 }
 
 pub async fn ws_handler(
@@ -175,6 +181,28 @@ async fn dispatch(state: &AppState, raw: &str) -> String {
                 Ok(Err(e)) => error_json(clipboard::error_code(&e)),
                 Err(_) => error_json("internal"),
             }
+        }
+        Command::Enter => inject_key_cmd(&state.enigo, enigo::Key::Return).await,
+        Command::Tab => inject_key_cmd(&state.enigo, enigo::Key::Tab).await,
+        Command::Backspace => inject_key_cmd(&state.enigo, enigo::Key::Backspace).await,
+    }
+}
+
+async fn inject_key_cmd(
+    enigo: &Arc<Mutex<Enigo>>,
+    key: enigo::Key,
+) -> String {
+    let enigo = enigo.clone();
+    let result = tokio::task::spawn_blocking(move || inject::inject_key(&enigo, key)).await;
+    match result {
+        Ok(Ok(())) => ok_json(),
+        Ok(Err(e)) => {
+            eprintln!("[ws] 按键注入失败: {}", e);
+            error_json("inject_failed")
+        }
+        Err(e) => {
+            eprintln!("[ws] spawn_blocking join 失败: {}", e);
+            error_json("internal")
         }
     }
 }
