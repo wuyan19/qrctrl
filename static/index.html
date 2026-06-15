@@ -38,6 +38,73 @@
   .status.connected .dot { background: #2cb24a; }
   .status.disconnected { background: #fde8e8; }
   .status.disconnected .dot { background: #d33; }
+  .top-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 14px;
+    align-items: stretch;
+  }
+  .top-row .status {
+    flex: 1;
+    margin-bottom: 0;
+  }
+  .help-btn {
+    flex: 0 0 auto;
+    width: 44px;
+    padding: 0;
+    background: #fff;
+    color: #0071e3;
+    border: 1px solid #d2d2d7;
+    font-size: 18px;
+    font-weight: 600;
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .help-btn:active { background: #f0f0f3; }
+  #help-modal { background: rgba(0,0,0,0.5); }
+  .help-card {
+    background: #fff;
+    color: #1d1d1f;
+    border-radius: 14px;
+    padding: 16px;
+    width: 90vw;
+    max-width: 420px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .help-title {
+    font-size: 17px;
+    font-weight: 600;
+    text-align: center;
+  }
+  .help-content {
+    overflow-y: auto;
+    font-size: 14px;
+    line-height: 1.6;
+    -webkit-overflow-scrolling: touch;
+  }
+  .help-content h3 {
+    font-size: 14px;
+    margin-top: 12px;
+    margin-bottom: 4px;
+    color: #0071e3;
+  }
+  .help-content h3:first-child { margin-top: 0; }
+  .help-content p {
+    color: #424245;
+    margin-bottom: 6px;
+  }
+  #help-close {
+    width: auto;
+    align-self: center;
+    padding: 10px 32px;
+    background: #0071e3;
+    color: #fff;
+  }
   textarea {
     flex: 1;
     min-height: 140px;
@@ -298,9 +365,12 @@
 </style>
 </head>
 <body>
-<div class="status" id="status">
-  <span class="dot"></span>
-  <span id="status-text">连接中...</span>
+<div class="top-row">
+  <div class="status" id="status">
+    <span class="dot"></span>
+    <span id="status-text">连接中...</span>
+  </div>
+  <button id="btn-help" class="help-btn" aria-label="帮助">?</button>
 </div>
 <textarea id="text" placeholder="点击这里输入文本，或粘贴截图..." autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>
 <label class="auto-send">
@@ -314,27 +384,18 @@
   <button id="btn-tools" class="secondary">🛠</button>
 </div>
 <div id="tool-panel" class="tool-panel">
-  <div class="sheet-group">
-    <div class="sheet-group-title">从 PC 拉取</div>
-    <div class="sheet-row">
-      <button id="btn-pull-text">📋 拉文本</button>
-      <button id="btn-pull-image">🖼 拉图片</button>
-      <button id="btn-pull-file">📎 拉文件</button>
-    </div>
+  <div class="sheet-row">
+    <button id="btn-pull-text">📋 拉文本</button>
+    <button id="btn-pull-image">🖼 拉图片</button>
+    <button id="btn-pull-file">📎 拉文件</button>
   </div>
-  <div class="sheet-group">
-    <div class="sheet-group-title">上传到 PC</div>
-    <div class="sheet-row">
-      <button id="btn-pick-image">📷 选图上传</button>
-      <button id="btn-send-file">📁 发送文件</button>
-    </div>
+  <div class="sheet-row">
+    <button id="btn-pick-image">📷 选图上传</button>
+    <button id="btn-send-file">📁 发送文件</button>
   </div>
-  <div class="sheet-group">
-    <div class="sheet-group-title">注入按键</div>
-    <div class="sheet-row">
-      <button id="btn-tab">⇥ Tab</button>
-      <button id="btn-backspace">⌫ Backspace</button>
-    </div>
+  <div class="sheet-row">
+    <button id="btn-tab">⇥ Tab</button>
+    <button id="btn-backspace">⌫ Backspace</button>
   </div>
 </div>
 <input id="file-pick" type="file" accept="image/*" hidden>
@@ -359,6 +420,28 @@
     <div class="file-list-title">选择要下载的文件</div>
     <div class="file-list-items" id="file-list-items"></div>
     <button id="file-list-close">取消</button>
+  </div>
+</div>
+
+<div id="help-modal" class="modal">
+  <div class="help-card">
+    <div class="help-title">使用说明</div>
+    <div class="help-content">
+      <h3>连接</h3>
+      <p>PC 启动后会显示二维码。用手机系统相机或微信「扫一扫」扫描，浏览器自动打开本页面。</p>
+      <h3>主要功能</h3>
+      <p><b>文本注入</b>：手机输入的文字（含语音输入）会实时显示在 PC 当前焦点窗口。Enter 换行，点「发送」按钮提交。</p>
+      <p><b>双向剪贴板</b>：拉文本 / 拉图片 把 PC 剪贴板内容取到手机；选图上传 / 粘贴截图 把手机图片写入 PC 剪贴板。</p>
+      <p><b>双向文件</b>：📎 拉文件 下载 PC 剪贴板里复制的文件；📁 发送文件 把手机文件传到 PC 下载目录。</p>
+      <p><b>按键注入</b>：⏎ Enter / ⇥ Tab / ⌫ Backspace 直接发送到 PC 焦点窗口。</p>
+      <h3>权限</h3>
+      <p>macOS 首次启动需授予「辅助功能」权限（系统设置 → 隐私与安全性）。Windows / Linux 无需特殊权限。</p>
+      <h3>安全</h3>
+      <p>仅本机局域网通信，每次启动随机生成 token 鉴权。关闭 PC 程序即断开所有连接。</p>
+      <h3>排错</h3>
+      <p>PC 的 IP 变化后需重新扫码。中文输入法无需切换，直接出字。断线会自动重连。</p>
+    </div>
+    <button id="help-close">关闭</button>
   </div>
 </div>
 
@@ -400,6 +483,9 @@ const btnTab = document.getElementById('btn-tab');
 const btnBackspace = document.getElementById('btn-backspace');
 const toastEl = document.getElementById('toast');
 const autoSendChk = document.getElementById('auto-send');
+const helpBtn = document.getElementById('btn-help');
+const helpModal = document.getElementById('help-modal');
+const helpClose = document.getElementById('help-close');
 
 let ws = null;
 let reconnectDelay = 1000;
@@ -596,6 +682,11 @@ function hideSheet() { toolPanel.classList.remove('open'); }
 modalClose.addEventListener('click', () => modal.classList.remove('show'));
 modal.addEventListener('click', (e) => {
   if (e.target === modal) modal.classList.remove('show');
+});
+helpBtn.addEventListener('click', () => helpModal.classList.add('show'));
+helpClose.addEventListener('click', () => helpModal.classList.remove('show'));
+helpModal.addEventListener('click', (e) => {
+  if (e.target === helpModal) helpModal.classList.remove('show');
 });
 
 // ===== 文件传输 =====
