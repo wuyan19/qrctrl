@@ -170,9 +170,11 @@
   }
   #touchpad-modal .touchpad-buttons button {
     flex: 1;
+    min-width: 0;
+    height: 38px;
     background: #48484a;
     color: #fff;
-    padding: 12px 0;
+    padding: 0;
     font-size: 18px;
     border-radius: 10px;
     -webkit-tap-highlight-color: transparent;
@@ -468,13 +470,9 @@
     <button id="btn-pull-file">📎 拉文件</button>
   </div>
   <div class="sheet-row">
-    <button id="btn-pick-image">📷 选图上传</button>
-    <button id="btn-send-file">📁 发送文件</button>
-  </div>
-  <div class="sheet-row">
+    <button id="btn-pick-image">📷 推图片</button>
+    <button id="btn-send-file">📁 推文件</button>
     <button id="btn-touchpad">🖱 触控板</button>
-    <button id="btn-tab">⇥ Tab</button>
-    <button id="btn-backspace">⌫ Backspace</button>
   </div>
 </div>
 <input id="file-pick" type="file" accept="image/*" hidden>
@@ -539,6 +537,8 @@
       <button id="btn-mouse-left">●</button>
       <button id="btn-mouse-right">●</button>
       <button id="btn-scroll-down">⇩</button>
+      <button id="btn-copy">📋</button>
+      <button id="btn-paste">📥</button>
     </div>
     <div class="touchpad-hint">拖动移动 · 轻点左键 · 底部按钮：滚动 / 左右键</div>
   </div>
@@ -578,8 +578,8 @@ const fileListClose = document.getElementById('file-list-close');
 const toolPanel = document.getElementById('tool-panel');
 const btnTools = document.getElementById('btn-tools');
 const btnEnter = document.getElementById('btn-enter');
-const btnTab = document.getElementById('btn-tab');
-const btnBackspace = document.getElementById('btn-backspace');
+const btnCopy = document.getElementById('btn-copy');
+const btnPaste = document.getElementById('btn-paste');
 const toastEl = document.getElementById('toast');
 const autoSendChk = document.getElementById('auto-send');
 const helpBtn = document.getElementById('btn-help');
@@ -778,8 +778,8 @@ textEl.addEventListener('compositionend', () => {
 });
 textEl.addEventListener('input', scheduleAutoSend);
 btnEnter.addEventListener('click', () => send({ type: 'enter' }));
-btnTab.addEventListener('click', () => send({ type: 'tab' }));
-btnBackspace.addEventListener('click', () => send({ type: 'backspace' }));
+btnCopy.addEventListener('click', () => send({ type: 'copy' }));
+btnPaste.addEventListener('click', () => send({ type: 'paste' }));
 pullTextBtn.addEventListener('click', () => send({ type: 'get_clipboard_text' }));
 pullImageBtn.addEventListener('click', () => send({ type: 'get_clipboard_image' }));
 pickImageBtn.addEventListener('click', () => filePick.click());

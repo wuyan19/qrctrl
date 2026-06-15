@@ -48,6 +48,8 @@ enum Command {
     Enter,
     Tab,
     Backspace,
+    Copy,
+    Paste,
     MouseMove { dx: i32, dy: i32 },
     MouseClick { button: MouseButton },
     MouseScroll { dy: i32 },
@@ -206,6 +208,8 @@ async fn dispatch(state: &AppState, raw: &str) -> String {
         Command::Enter => inject_key_cmd(&state.enigo, enigo::Key::Return).await,
         Command::Tab => inject_key_cmd(&state.enigo, enigo::Key::Tab).await,
         Command::Backspace => inject_key_cmd(&state.enigo, enigo::Key::Backspace).await,
+        Command::Copy => inject_copy_cmd(&state.enigo).await,
+        Command::Paste => inject_paste_cmd(&state.enigo).await,
         Command::MouseMove { dx, dy } => inject_mouse_move_cmd(&state.enigo, dx, dy).await,
         Command::MouseClick { button } => {
             let btn = button.into();
@@ -278,6 +282,38 @@ async fn inject_mouse_scroll_cmd(enigo: &Arc<Mutex<Enigo>>, dy: i32) -> String {
         Ok(Ok(())) => ok_json(),
         Ok(Err(e)) => {
             eprintln!("[ws] 滚轮失败: {}", e);
+            error_json("inject_failed")
+        }
+        Err(e) => {
+            eprintln!("[ws] spawn_blocking join 失败: {}", e);
+            error_json("internal")
+        }
+    }
+}
+
+async fn inject_copy_cmd(enigo: &Arc<Mutex<Enigo>>) -> String {
+    let enigo = enigo.clone();
+    let result = tokio::task::spawn_blocking(move || inject::inject_copy(&enigo)).await;
+    match result {
+        Ok(Ok(())) => ok_json(),
+        Ok(Err(e)) => {
+            eprintln!("[ws] 复制快捷键失败: {}", e);
+            error_json("inject_failed")
+        }
+        Err(e) => {
+            eprintln!("[ws] spawn_blocking join 失败: {}", e);
+            error_json("internal")
+        }
+    }
+}
+
+async fn inject_paste_cmd(enigo: &Arc<Mutex<Enigo>>) -> String {
+    let enigo = enigo.clone();
+    let result = tokio::task::spawn_blocking(move || inject::inject_paste(&enigo)).await;
+    match result {
+        Ok(Ok(())) => ok_json(),
+        Ok(Err(e)) => {
+            eprintln!("[ws] 粘贴快捷键失败: {}", e);
             error_json("inject_failed")
         }
         Err(e) => {
@@ -460,5 +496,17 @@ mod tests {
         assert!(matches!(enigo::Button::from(MouseButton::Left), enigo::Button::Left));
         assert!(matches!(enigo::Button::from(MouseButton::Right), enigo::Button::Right));
         assert!(matches!(enigo::Button::from(MouseButton::Middle), enigo::Button::Middle));
+    }
+
+    #[test]
+    fn parse_copy() {
+        let cmd: Command = serde_json::from_str(r#"{"type":"copy"}"#).unwrap();
+        assert!(matches!(cmd, Command::Copy));
+    }
+
+    #[test]
+    fn parse_paste() {
+        let cmd: Command = serde_json::from_str(r#"{"type":"paste"}"#).unwrap();
+        assert!(matches!(cmd, Command::Paste));
     }
 }
