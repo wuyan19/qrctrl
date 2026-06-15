@@ -19,6 +19,24 @@ use crate::state::{AppState, TokenQuery};
 const MAX_TEXT_BYTES: usize = 100 * 1024;
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+impl From<MouseButton> for enigo::Button {
+    fn from(b: MouseButton) -> Self {
+        match b {
+            MouseButton::Left => enigo::Button::Left,
+            MouseButton::Right => enigo::Button::Right,
+            MouseButton::Middle => enigo::Button::Middle,
+        }
+    }
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Command {
     Text { value: String },
@@ -30,6 +48,9 @@ enum Command {
     Enter,
     Tab,
     Backspace,
+    MouseMove { dx: i32, dy: i32 },
+    MouseClick { button: MouseButton },
+    MouseScroll { dy: i32 },
 }
 
 pub async fn ws_handler(
@@ -185,6 +206,12 @@ async fn dispatch(state: &AppState, raw: &str) -> String {
         Command::Enter => inject_key_cmd(&state.enigo, enigo::Key::Return).await,
         Command::Tab => inject_key_cmd(&state.enigo, enigo::Key::Tab).await,
         Command::Backspace => inject_key_cmd(&state.enigo, enigo::Key::Backspace).await,
+        Command::MouseMove { dx, dy } => inject_mouse_move_cmd(&state.enigo, dx, dy).await,
+        Command::MouseClick { button } => {
+            let btn = button.into();
+            inject_mouse_button_cmd(&state.enigo, btn).await
+        }
+        Command::MouseScroll { dy } => inject_mouse_scroll_cmd(&state.enigo, dy).await,
     }
 }
 
@@ -198,6 +225,59 @@ async fn inject_key_cmd(
         Ok(Ok(())) => ok_json(),
         Ok(Err(e)) => {
             eprintln!("[ws] 按键注入失败: {}", e);
+            error_json("inject_failed")
+        }
+        Err(e) => {
+            eprintln!("[ws] spawn_blocking join 失败: {}", e);
+            error_json("internal")
+        }
+    }
+}
+
+async fn inject_mouse_move_cmd(enigo: &Arc<Mutex<Enigo>>, dx: i32, dy: i32) -> String {
+    let enigo = enigo.clone();
+    let result =
+        tokio::task::spawn_blocking(move || inject::inject_mouse_move(&enigo, dx, dy)).await;
+    match result {
+        Ok(Ok(())) => ok_json(),
+        Ok(Err(e)) => {
+            eprintln!("[ws] 鼠标移动失败: {}", e);
+            error_json("inject_failed")
+        }
+        Err(e) => {
+            eprintln!("[ws] spawn_blocking join 失败: {}", e);
+            error_json("internal")
+        }
+    }
+}
+
+async fn inject_mouse_button_cmd(enigo: &Arc<Mutex<Enigo>>, button: enigo::Button) -> String {
+    let enigo = enigo.clone();
+    let result =
+        tokio::task::spawn_blocking(move || inject::inject_mouse_button(&enigo, button)).await;
+    match result {
+        Ok(Ok(())) => ok_json(),
+        Ok(Err(e)) => {
+            eprintln!("[ws] 鼠标点击失败: {}", e);
+            error_json("inject_failed")
+        }
+        Err(e) => {
+            eprintln!("[ws] spawn_blocking join 失败: {}", e);
+            error_json("internal")
+        }
+    }
+}
+
+async fn inject_mouse_scroll_cmd(enigo: &Arc<Mutex<Enigo>>, dy: i32) -> String {
+    let enigo = enigo.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        inject::inject_mouse_scroll(&enigo, dy, enigo::Axis::Vertical)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => ok_json(),
+        Ok(Err(e)) => {
+            eprintln!("[ws] 滚轮失败: {}", e);
             error_json("inject_failed")
         }
         Err(e) => {
@@ -325,5 +405,60 @@ mod tests {
         let mut s = "abc".to_string();
         truncate_in_place(&mut s, 100);
         assert_eq!(s, "abc");
+    }
+
+    #[test]
+    fn parse_mouse_move() {
+        let cmd: Command = serde_json::from_str(r#"{"type":"mouse_move","dx":10,"dy":-5}"#).unwrap();
+        match cmd {
+            Command::MouseMove { dx, dy } => {
+                assert_eq!(dx, 10);
+                assert_eq!(dy, -5);
+            }
+            _ => panic!("expected MouseMove"),
+        }
+    }
+
+    #[test]
+    fn parse_mouse_click_left() {
+        let cmd: Command = serde_json::from_str(r#"{"type":"mouse_click","button":"left"}"#).unwrap();
+        assert!(matches!(cmd, Command::MouseClick { button: MouseButton::Left }));
+    }
+
+    #[test]
+    fn parse_mouse_click_right() {
+        let cmd: Command =
+            serde_json::from_str(r#"{"type":"mouse_click","button":"right"}"#).unwrap();
+        assert!(matches!(cmd, Command::MouseClick { button: MouseButton::Right }));
+    }
+
+    #[test]
+    fn parse_mouse_click_middle() {
+        let cmd: Command =
+            serde_json::from_str(r#"{"type":"mouse_click","button":"middle"}"#).unwrap();
+        assert!(matches!(cmd, Command::MouseClick { button: MouseButton::Middle }));
+    }
+
+    #[test]
+    fn parse_mouse_click_unknown_button_fails() {
+        let r: Result<Command, _> =
+            serde_json::from_str(r#"{"type":"mouse_click","button":"foo"}"#);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn parse_mouse_scroll() {
+        let cmd: Command = serde_json::from_str(r#"{"type":"mouse_scroll","dy":3}"#).unwrap();
+        match cmd {
+            Command::MouseScroll { dy } => assert_eq!(dy, 3),
+            _ => panic!("expected MouseScroll"),
+        }
+    }
+
+    #[test]
+    fn mouse_button_to_enigo_mapping() {
+        assert!(matches!(enigo::Button::from(MouseButton::Left), enigo::Button::Left));
+        assert!(matches!(enigo::Button::from(MouseButton::Right), enigo::Button::Right));
+        assert!(matches!(enigo::Button::from(MouseButton::Middle), enigo::Button::Middle));
     }
 }

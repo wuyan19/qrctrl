@@ -105,6 +105,84 @@
     background: #0071e3;
     color: #fff;
   }
+  #touchpad-modal { background: rgba(0,0,0,0.85); }
+  .touchpad {
+    background: #1c1c1e;
+    color: #fff;
+    border-radius: 14px;
+    width: 96vw;
+    max-width: 520px;
+    height: 92vh;
+    max-height: 800px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+  }
+  .touchpad-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 4px;
+  }
+  .touchpad-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #ccc;
+  }
+  .touchpad-status .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #999;
+  }
+  .touchpad-status.connected .dot { background: #2cb24a; }
+  .touchpad-status.disconnected .dot { background: #d33; }
+  #touchpad-close {
+    width: auto;
+    padding: 6px 16px;
+    background: #444;
+    color: #fff;
+    font-size: 13px;
+  }
+  .touch-area {
+    flex: 1;
+    background: #2c2c2e;
+    border-radius: 10px;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #666;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .touch-area:active { background: #3a3a3c; }
+  .touchpad-buttons {
+    display: flex;
+    gap: 8px;
+  }
+  .touchpad-buttons button {
+    flex: 1;
+    background: #48484a;
+    color: #fff;
+    padding: 16px 0;
+    font-size: 18px;
+    border-radius: 10px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .touchpad-buttons button:active { background: #5a5a5c; }
+  .touchpad-buttons button.primary { background: #0071e3; }
+  .touchpad-buttons button.primary:active { background: #0058b9; }
+  .touchpad-hint {
+    font-size: 11px;
+    color: #888;
+    text-align: center;
+  }
   textarea {
     flex: 1;
     min-height: 140px;
@@ -394,6 +472,7 @@
     <button id="btn-send-file">📁 发送文件</button>
   </div>
   <div class="sheet-row">
+    <button id="btn-touchpad">🖱 触控板</button>
     <button id="btn-tab">⇥ Tab</button>
     <button id="btn-backspace">⌫ Backspace</button>
   </div>
@@ -445,6 +524,26 @@
   </div>
 </div>
 
+<div id="touchpad-modal" class="modal">
+  <div class="touchpad">
+    <div class="touchpad-header">
+      <div class="touchpad-status" id="touchpad-status">
+        <span class="dot"></span>
+        <span id="touchpad-status-text">未连接</span>
+      </div>
+      <button id="touchpad-close">关闭</button>
+    </div>
+    <div id="touch-area" class="touch-area">拖动移动光标 · 轻点 = 左键</div>
+    <div class="touchpad-buttons">
+      <button id="btn-scroll-up">⇧</button>
+      <button id="btn-mouse-left" class="primary">●</button>
+      <button id="btn-mouse-right">●</button>
+      <button id="btn-scroll-down">⇩</button>
+    </div>
+    <div class="touchpad-hint">拖动移动 · 轻点左键 · 底部按钮：滚动 / 左右键</div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -486,6 +585,16 @@ const autoSendChk = document.getElementById('auto-send');
 const helpBtn = document.getElementById('btn-help');
 const helpModal = document.getElementById('help-modal');
 const helpClose = document.getElementById('help-close');
+const btnTouchpad = document.getElementById('btn-touchpad');
+const touchpadModal = document.getElementById('touchpad-modal');
+const touchpadClose = document.getElementById('touchpad-close');
+const touchpadStatus = document.getElementById('touchpad-status');
+const touchpadStatusText = document.getElementById('touchpad-status-text');
+const touchArea = document.getElementById('touch-area');
+const btnScrollUp = document.getElementById('btn-scroll-up');
+const btnScrollDown = document.getElementById('btn-scroll-down');
+const btnMouseLeft = document.getElementById('btn-mouse-left');
+const btnMouseRight = document.getElementById('btn-mouse-right');
 
 let ws = null;
 let reconnectDelay = 1000;
@@ -500,6 +609,9 @@ let currentUploadXHR = null;
 function setStatus(s, connected) {
   statusText.textContent = s;
   statusEl.className = 'status ' + (connected ? 'connected' : 'disconnected');
+  if (touchpadModal && touchpadModal.classList.contains('show')) {
+    syncTouchpadStatus();
+  }
 }
 
 function toast(msg) {
@@ -688,6 +800,86 @@ helpClose.addEventListener('click', () => helpModal.classList.remove('show'));
 helpModal.addEventListener('click', (e) => {
   if (e.target === helpModal) helpModal.classList.remove('show');
 });
+
+// ===== 触控板 =====
+// 灵敏度：手机屏幕上 1px 拖动 → PC 上 1.5px 光标移动
+const TOUCH_SENSITIVITY = 1.5;
+// 轻点判定：移动 < 10px 且持续 < 250ms 视为左键点击
+const TAP_MAX_DIST = 10;
+const TAP_MAX_MS = 250;
+// 移动事件最小间隔（30ms ≈ 33fps），避免 WS 消息洪泛
+const MOVE_MIN_MS = 30;
+// 滚动步长（每次按滚动按钮的滚轮「格」数）
+const SCROLL_STEP = 3;
+
+btnTouchpad.addEventListener('click', () => {
+  hideSheet();
+  syncTouchpadStatus();
+  touchpadModal.classList.add('show');
+});
+touchpadClose.addEventListener('click', () => touchpadModal.classList.remove('show'));
+
+function syncTouchpadStatus() {
+  const open = ws && ws.readyState === WebSocket.OPEN;
+  touchpadStatus.className = 'touchpad-status ' + (open ? 'connected' : 'disconnected');
+  touchpadStatusText.textContent = open ? `${deviceName} 已连接` : '未连接';
+}
+
+// touchstart: 记录起点、时间，并清空上一帧坐标
+// touchmove: 计算与上一帧的 delta，节流后发 mouse_move
+// touchend: 若移动很小且时间很短 → 视为轻点 → 发 mouse_click left
+let touchStartX = 0, touchStartY = 0;
+let touchLastX = 0, touchLastY = 0;
+let touchStartT = 0;
+let touchLastSendT = 0;
+let touchMovedDist = 0;
+
+touchArea.addEventListener('touchstart', (e) => {
+  if (e.touches.length !== 1) return;
+  const t = e.touches[0];
+  touchStartX = touchLastX = t.clientX;
+  touchStartY = touchLastY = t.clientY;
+  touchStartT = Date.now();
+  touchLastSendT = 0;
+  touchMovedDist = 0;
+}, { passive: true });
+
+touchArea.addEventListener('touchmove', (e) => {
+  if (e.touches.length !== 1) return;
+  e.preventDefault();
+  const t = e.touches[0];
+  const dx = t.clientX - touchLastX;
+  const dy = t.clientY - touchLastY;
+  touchLastX = t.clientX;
+  touchLastY = t.clientY;
+  touchMovedDist += Math.abs(dx) + Math.abs(dy);
+
+  const now = Date.now();
+  if (now - touchLastSendT < MOVE_MIN_MS) return;
+  touchLastSendT = now;
+
+  send({
+    type: 'mouse_move',
+    dx: Math.round(dx * TOUCH_SENSITIVITY),
+    dy: Math.round(dy * TOUCH_SENSITIVITY),
+  });
+}, { passive: false });
+
+touchArea.addEventListener('touchend', () => {
+  const dt = Date.now() - touchStartT;
+  if (touchMovedDist < TAP_MAX_DIST && dt < TAP_MAX_MS) {
+    send({ type: 'mouse_click', button: 'left' });
+  }
+});
+
+touchArea.addEventListener('touchcancel', () => {
+  // 中断（如来电）不做点击
+});
+
+btnMouseLeft.addEventListener('click', () => send({ type: 'mouse_click', button: 'left' }));
+btnMouseRight.addEventListener('click', () => send({ type: 'mouse_click', button: 'right' }));
+btnScrollUp.addEventListener('click', () => send({ type: 'mouse_scroll', dy: -SCROLL_STEP }));
+btnScrollDown.addEventListener('click', () => send({ type: 'mouse_scroll', dy: SCROLL_STEP }));
 
 // ===== 文件传输 =====
 
