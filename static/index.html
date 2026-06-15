@@ -261,9 +261,16 @@
     font-size: 14px;
   }
   #tool-sheet {
-    background: rgba(0,0,0,0.5);
+    display: flex;
+    background: rgba(0,0,0,0);
     align-items: flex-end;
     padding: 0;
+    pointer-events: none;
+  }
+  #tool-sheet.show {
+    background: rgba(0,0,0,0.5);
+    pointer-events: auto;
+    transition: background 0.25s;
   }
   #tool-sheet .sheet-card {
     background: #fff;
@@ -275,6 +282,11 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
+    transform: translateY(100%);
+    transition: transform 0.28s ease-out;
+  }
+  #tool-sheet.show .sheet-card {
+    transform: translateY(0);
   }
   .sheet-group {
     display: flex;
@@ -298,15 +310,6 @@
   }
   .sheet-row button:active {
     background: #e0e0e5;
-  }
-  #sheet-close {
-    width: auto;
-    align-self: center;
-    padding: 10px 36px;
-    background: #f0f0f3;
-    color: #1d1d1f;
-    font-size: 14px;
-    margin-top: 4px;
   }
 </style>
 </head>
@@ -375,7 +378,6 @@
         <button id="btn-backspace">⌫ Backspace</button>
       </div>
     </div>
-    <button id="sheet-close">收起</button>
   </div>
 </div>
 
@@ -411,7 +413,6 @@ const fileListModal = document.getElementById('file-list-modal');
 const fileListItems = document.getElementById('file-list-items');
 const fileListClose = document.getElementById('file-list-close');
 const toolSheet = document.getElementById('tool-sheet');
-const sheetClose = document.getElementById('sheet-close');
 const btnTools = document.getElementById('btn-tools');
 const btnEnter = document.getElementById('btn-enter');
 const btnTab = document.getElementById('btn-tab');
@@ -610,7 +611,6 @@ filePick.addEventListener('change', () => {
   }
 });
 btnTools.addEventListener('click', () => toolSheet.classList.add('show'));
-sheetClose.addEventListener('click', hideSheet);
 toolSheet.addEventListener('click', (e) => {
   if (e.target === toolSheet) hideSheet();
 });
