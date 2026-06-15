@@ -44,6 +44,11 @@ struct Cli {
     /// 单个文件大小上限（字节，默认 10 GB）
     #[arg(long, default_value_t = DEFAULT_MAX_SIZE)]
     max_size: u64,
+
+    /// 固定 token（用于重启后保持扫码 URL 不变，手机端刷新页面即可重连）
+    /// 默认每次启动随机生成。提供时必须是 4-64 位 ASCII 字母数字。
+    #[arg(long)]
+    token: Option<String>,
 }
 
 fn resolve_name(cli_name: Option<String>) -> String {
@@ -71,7 +76,13 @@ fn resolve_save_dir(cli_save_dir: Option<PathBuf>) -> PathBuf {
 async fn main() {
     let cli = Cli::parse();
 
-    let token = token::generate_token();
+    let token = match &cli.token {
+        Some(t) => {
+            token::validate_token(t).unwrap_or_else(|e| panic!("--token 无效：{}", e));
+            t.clone()
+        }
+        None => token::generate_token(),
+    };
     let enigo = Enigo::new(&Settings::default()).expect("Enigo 初始化失败");
     let cb = clipboard::new_handle().expect("剪贴板初始化失败");
     let name = resolve_name(cli.name);
