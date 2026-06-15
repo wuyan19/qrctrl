@@ -163,11 +163,12 @@
     cursor: pointer;
   }
   .touch-area:active { background: #3a3a3c; }
-  .touchpad-buttons {
+  #touchpad-modal .touchpad-buttons {
     display: flex;
     gap: 8px;
+    width: 100%;
   }
-  .touchpad-buttons button {
+  #touchpad-modal .touchpad-buttons button {
     flex: 1;
     background: #48484a;
     color: #fff;
@@ -176,9 +177,9 @@
     border-radius: 10px;
     -webkit-tap-highlight-color: transparent;
   }
-  .touchpad-buttons button:active { background: #5a5a5c; }
-  .touchpad-buttons button.primary { background: #0071e3; }
-  .touchpad-buttons button.primary:active { background: #0058b9; }
+  #touchpad-modal .touchpad-buttons button:active { background: #5a5a5c; }
+  #touchpad-modal .touchpad-buttons button.primary { background: #0071e3; }
+  #touchpad-modal .touchpad-buttons button.primary:active { background: #0058b9; }
   .touchpad-hint {
     font-size: 11px;
     color: #888;
