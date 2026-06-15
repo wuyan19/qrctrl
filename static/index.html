@@ -260,33 +260,17 @@
     color: #1d1d1f;
     font-size: 14px;
   }
-  #tool-sheet {
-    display: flex;
-    background: rgba(0,0,0,0);
-    align-items: flex-end;
-    padding: 0;
-    pointer-events: none;
-  }
-  #tool-sheet.show {
-    background: rgba(0,0,0,0.5);
-    pointer-events: auto;
-    transition: background 0.25s;
-  }
-  #tool-sheet .sheet-card {
-    background: #fff;
-    color: #1d1d1f;
-    border-radius: 16px 16px 0 0;
-    padding: 16px 14px calc(14px + env(safe-area-inset-bottom));
-    width: 100%;
-    max-width: 520px;
+  .tool-panel {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.25s ease-out, margin-top 0.25s ease-out;
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    transform: translateY(100%);
-    transition: transform 0.28s ease-out;
+    gap: 10px;
   }
-  #tool-sheet.show .sheet-card {
-    transform: translateY(0);
+  .tool-panel.open {
+    max-height: 360px;
+    margin-top: 10px;
   }
   .sheet-group {
     display: flex;
@@ -329,6 +313,30 @@
   <button id="clear" class="secondary">🗑</button>
   <button id="btn-tools" class="secondary">🛠</button>
 </div>
+<div id="tool-panel" class="tool-panel">
+  <div class="sheet-group">
+    <div class="sheet-group-title">从 PC 拉取</div>
+    <div class="sheet-row">
+      <button id="btn-pull-text">📋 拉文本</button>
+      <button id="btn-pull-image">🖼 拉图片</button>
+      <button id="btn-pull-file">📎 拉文件</button>
+    </div>
+  </div>
+  <div class="sheet-group">
+    <div class="sheet-group-title">上传到 PC</div>
+    <div class="sheet-row">
+      <button id="btn-pick-image">📷 选图上传</button>
+      <button id="btn-send-file">📁 发送文件</button>
+    </div>
+  </div>
+  <div class="sheet-group">
+    <div class="sheet-group-title">注入按键</div>
+    <div class="sheet-row">
+      <button id="btn-tab">⇥ Tab</button>
+      <button id="btn-backspace">⌫ Backspace</button>
+    </div>
+  </div>
+</div>
 <input id="file-pick" type="file" accept="image/*" hidden>
 <input id="file-send" type="file" hidden>
 <div class="hint">回车换行 · 点「发送」按钮提交 · 断线自动重连</div>
@@ -351,33 +359,6 @@
     <div class="file-list-title">选择要下载的文件</div>
     <div class="file-list-items" id="file-list-items"></div>
     <button id="file-list-close">取消</button>
-  </div>
-</div>
-
-<div id="tool-sheet" class="modal">
-  <div class="sheet-card">
-    <div class="sheet-group">
-      <div class="sheet-group-title">从 PC 拉取</div>
-      <div class="sheet-row">
-        <button id="btn-pull-text">📋 拉文本</button>
-        <button id="btn-pull-image">🖼 拉图片</button>
-        <button id="btn-pull-file">📎 拉文件</button>
-      </div>
-    </div>
-    <div class="sheet-group">
-      <div class="sheet-group-title">上传到 PC</div>
-      <div class="sheet-row">
-        <button id="btn-pick-image">📷 选图上传</button>
-        <button id="btn-send-file">📁 发送文件</button>
-      </div>
-    </div>
-    <div class="sheet-group">
-      <div class="sheet-group-title">注入按键</div>
-      <div class="sheet-row">
-        <button id="btn-tab">⇥ Tab</button>
-        <button id="btn-backspace">⌫ Backspace</button>
-      </div>
-    </div>
   </div>
 </div>
 
@@ -412,7 +393,7 @@ const transferCancel = document.getElementById('transfer-cancel');
 const fileListModal = document.getElementById('file-list-modal');
 const fileListItems = document.getElementById('file-list-items');
 const fileListClose = document.getElementById('file-list-close');
-const toolSheet = document.getElementById('tool-sheet');
+const toolPanel = document.getElementById('tool-panel');
 const btnTools = document.getElementById('btn-tools');
 const btnEnter = document.getElementById('btn-enter');
 const btnTab = document.getElementById('btn-tab');
@@ -610,11 +591,8 @@ filePick.addEventListener('change', () => {
     filePick.value = '';
   }
 });
-btnTools.addEventListener('click', () => toolSheet.classList.add('show'));
-toolSheet.addEventListener('click', (e) => {
-  if (e.target === toolSheet) hideSheet();
-});
-function hideSheet() { toolSheet.classList.remove('show'); }
+btnTools.addEventListener('click', () => toolPanel.classList.toggle('open'));
+function hideSheet() { toolPanel.classList.remove('open'); }
 modalClose.addEventListener('click', () => modal.classList.remove('show'));
 modal.addEventListener('click', (e) => {
   if (e.target === modal) modal.classList.remove('show');
