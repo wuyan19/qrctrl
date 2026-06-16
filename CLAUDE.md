@@ -91,7 +91,7 @@ CLI 参数：
 
 ## 扩展计划
 
-当前已实现：文本注入、双向文本/图片剪贴板同步、JSON 协议（统一，无旧版兼容）、命令行参数与设备名标识、自动发送、Enter/Tab/Backspace/Copy/Paste 快捷键、鼠标移动/点击/拖动（双击后按住拖动）/滚轮、双向任意文件传输、多网卡 IP 候选筛选与 `--prefer-ip` 收窄、`--token` 固定 token 重启保持 URL。未来计划扩展（详见 `docs/research.md`）：
+当前已实现：文本注入、双向文本/图片剪贴板同步、JSON 协议（统一，无旧版兼容）、命令行参数与设备名标识、自动发送、Enter/Tab/Backspace/Copy/Paste 快捷键、鼠标移动/点击/拖动（双击后按住拖动）/滚轮、双向任意文件传输、多网卡 IP 候选筛选与 `--prefer-ip` 收窄、`--token` 固定 token 重启保持 URL、系统托盘 + GUI 子系统后台运行、双击自动弹 QR。未来计划扩展（详见 `docs/future.md`）：
 
 - 快捷键序列（如 `Cmd+Space`、`Win+R`）
 - 安全考虑：快捷键白名单或二次确认机制
