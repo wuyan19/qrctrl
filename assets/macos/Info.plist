@@ -12,6 +12,11 @@
     <string>qrctrl</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <!-- AppIcon.icns 由 scripts/build-macos-app.sh 从 assets/icon.png 用 sips+iconutil 生成 -->
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <!-- 版本号由 scripts/build-macos-app.sh 在打包时从 Cargo.toml 注入。 -->
     <key>CFBundleVersion</key>
     <string>@VERSION@</string>

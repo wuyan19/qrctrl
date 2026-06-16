@@ -60,7 +60,43 @@ chmod +x "$app/Contents/MacOS/qrctrl"
 # 注入版本号
 sed "s/@VERSION@/$version/g" "$root/assets/macos/Info.plist" > "$app/Contents/Info.plist"
 
-# 4. ad-hoc 签名：让 macOS 至少认作合法 bundle；release CI 上未签名也能跑
+# 4. 生成 AppIcon.icns：用 sips 把 assets/icon.png 切成 10 个标准尺寸，
+#    再用 iconutil 打成 .icns。两者都是 macOS 自带，CI 与本地都有。
+#    失败仅 warn——bundle 仍可用，只是 Finder/Dock 显示通用图标。
+if command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
+    iconset_dir="$(mktemp -d -t qrctrl-iconset)/AppIcon.iconset"
+    mkdir -p "$iconset_dir"
+    src="$root/assets/icon.png"
+    # 规格：<像素尺寸>:<文件名>
+    specs=(
+        "16:icon_16x16.png"
+        "32:icon_16x16@2x.png"
+        "32:icon_32x32.png"
+        "64:icon_32x32@2x.png"
+        "128:icon_128x128.png"
+        "256:icon_128x128@2x.png"
+        "256:icon_256x256.png"
+        "512:icon_256x256@2x.png"
+        "512:icon_512x512.png"
+        "1024:icon_512x512@2x.png"
+    )
+    for spec in "${specs[@]}"; do
+        size="${spec%%:*}"
+        name="${spec#*:}"
+        sips -s format png -z "$size" "$size" "$src" --out "$iconset_dir/$name" >/dev/null 2>&1 || \
+            echo "[warn] sips 生成 $name 失败" >&2
+    done
+    if iconutil -c icns "$iconset_dir" -o "$app/Contents/Resources/AppIcon.icns" >/dev/null 2>&1; then
+        echo "[build] AppIcon.icns 已生成"
+    else
+        echo "[warn] iconutil 失败，bundle 将无自定义图标" >&2
+    fi
+    rm -rf "$(dirname "$iconset_dir")"
+else
+    echo "[warn] 找不到 sips 或 iconutil（非 macOS？），bundle 将无自定义图标" >&2
+fi
+
+# 5. ad-hoc 签名：让 macOS 至少认作合法 bundle；release CI 上未签名也能跑
 codesign --force --deep --sign - "$app" >/dev/null 2>&1 || \
     echo "[warn] codesign 失败（可忽略），bundle 仍可用，但 macOS 会标记为未签名" >&2
 
