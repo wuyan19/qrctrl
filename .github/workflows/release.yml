@@ -56,7 +56,21 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Rename binary
+      - name: Build .app bundle (macOS)
+        if: runner.os == 'macOS'
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: ./scripts/build-macos-app.sh
+
+      - name: Package macOS assets
+        if: runner.os == 'macOS'
+        working-directory: target/${{ matrix.target }}/release
+        run: |
+          cp qrctrl ${{ matrix.asset_name }}
+          ditto -c -k --keepParent qrctrl.app ${{ matrix.asset_name }}.app.zip
+
+      - name: Rename binary (non-macOS)
+        if: runner.os != 'macOS'
         run: cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/${{ matrix.target }}/release/${{ matrix.asset_name }}
 
       - name: Upload release asset
@@ -65,6 +79,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          files: target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+          files: |
+            target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+            target/${{ matrix.target }}/release/${{ matrix.asset_name }}.app.zip
           name: qrctrl ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           draft: true

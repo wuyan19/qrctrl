@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>qrctrl</string>
+    <key>CFBundleDisplayName</key>
+    <string>qrctrl</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.wuyan.qrctrl</string>
+    <key>CFBundleExecutable</key>
+    <string>qrctrl</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <!-- 版本号由 scripts/build-macos-app.sh 在打包时从 Cargo.toml 注入。 -->
+    <key>CFBundleVersion</key>
+    <string>@VERSION@</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
+    <!--
+        LSUIElement=true：把应用标识为「背景 UI 应用」(agent / accessory)。
+        - 双击 .app 时不弹 Terminal、不进 Dock
+        - 关任何窗口都不影响进程（无父终端可关）
+        - 托盘图标与按需弹出的 QR 窗口仍正常工作
+
+        与 Windows 的 windows_subsystem = "windows" 等效，是 macOS 双击后台运行的标准做法。
+    -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>

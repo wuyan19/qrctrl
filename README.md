@@ -12,7 +12,7 @@ A cross-platform tool that turns your phone into a remote control for your PC �
 - **Mouse control** — move / click / tap-tap-drag / scroll from a touchpad surface
 - **Shortcut keys** — Enter / Tab / Backspace / Copy / Paste
 - **Auto-send mode** — text transmits automatically after typing pauses (IME-safe)
-- **System tray + background run** — closes terminal won't kill the program; on Windows double-click the exe to run silently in the background
+- **System tray + background run** — closes terminal won't kill the program; on Windows and macOS double-click to run silently in the background
 - **Token persistence** — `--token` keeps the scan URL stable across restarts
 - **Multiple devices** — give each PC a `--name` so the phone UI can tell them apart
 
@@ -31,12 +31,15 @@ cargo install --path .
 
 Download the binary for your platform from the [Releases](https://github.com/wuyan19/qrctrl/releases) page.
 
-> **macOS Users**: The binary is unsigned. After downloading:
-> 1. If macOS blocks it with "cannot be opened because it is from an unidentified developer", run:
->    ```shell
->    xattr -d com.apple.quarantine qrctrl-*
->    ```
-> 2. Grant **Accessibility** permission in System Settings → Privacy & Security → Accessibility (required for keyboard input).
+> **macOS Users**: Two assets are published per architecture — a bare binary (`qrctrl-<arch>-macos`) and an `.app` bundle (`qrctrl-<arch>-macos.app.zip`).
+>
+> - **For double-click background use**, grab the `.app.zip`. Unzip it (Finder → double-click works), then double-click `qrctrl.app`. No Terminal opens, no Dock icon, just the tray. Drop it in `/Applications` to launch from Spotlight thereafter.
+> - **For CLI use**, grab the bare binary, `chmod +x`, and run from a shell.
+>
+> The bundle is unsigned (ad-hoc signed). On first launch macOS will block it ("from an unidentified developer"):
+> 1. Unzip, then in Finder right-click `qrctrl.app` → **Open** → **Open** in the dialog. This one-time bypass remembers the choice.
+> 2. Or from terminal: `xattr -dr com.apple.quarantine /path/to/qrctrl.app`
+> 3. Grant **Accessibility** permission in System Settings → Privacy & Security → Accessibility (required for keyboard input).
 
 > **Windows Users**: The release build uses the GUI subsystem — double-click `qrctrl.exe` in File Explorer and it runs silently in the background (no cmd window, no terminal parent to kill). The QR window auto-opens on first launch. The system tray icon provides a menu (Copy URL / Show QR / Quit).
 
@@ -118,6 +121,8 @@ Once running, qrctrl lives in the system tray with a menu:
 
 On Windows the release build is a GUI-subsystem binary — double-clicking `qrctrl.exe` from File Explorer launches it silently (no cmd window, no parent terminal to accidentally close). The QR window auto-opens on first launch. From a terminal (PowerShell / cmd) the banner is still printed normally.
 
+On macOS the `.app` bundle sets `LSUIElement=true` in its `Info.plist`, so double-clicking `qrctrl.app` from Finder launches it as a background UI agent — no Terminal window opens, no Dock icon appears, and closing any window (or logging out/in) won't kill the process. The QR window auto-opens on first launch (since stdout isn't a TTY in that path). Power users can still run `qrctrl.app/Contents/MacOS/qrctrl` from a shell to get the banner.
+
 ## How It Works
 
 - PC runs an HTTP + WebSocket server on the configured `addr:port`. The HTTP layer serves the static control panel at `/` and streams files at `/upload/{id}` + `/download/{id}`.
@@ -146,6 +151,14 @@ cargo build --release    # release build (GUI subsystem on Windows, LTO + strip)
 cargo test               # run unit tests
 ```
 
+To assemble the macOS `.app` bundle locally:
+
+```shell
+cargo build --release
+./scripts/build-macos-app.sh                    # produces target/release/qrctrl.app
+TARGET_TRIPLE=aarch64-apple-darwin ./scripts/build-macos-app.sh   # cross-target
+```
+
 See [docs/future.md](docs/future.md) for design notes on unimplemented features (shortcut sequences, metadata+blob architecture, TLS, macro buttons).
 
 To regenerate `assets/tray-icon.png` from a new `assets/icon.png`:
@@ -167,7 +180,7 @@ Shipped:
 - [x] Multi-NIC IP selection (`--prefer-ip`)
 - [x] Fixed token for stable scan URL (`--token`)
 - [x] System tray + graceful shutdown
-- [x] Background run on Windows (GUI subsystem)
+- [x] Background run on Windows (GUI subsystem) and macOS (`.app` bundle with `LSUIElement`)
 - [x] Auto-open QR window on double-click launch
 
 Planned for upcoming versions:

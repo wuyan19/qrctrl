@@ -12,7 +12,7 @@
 - **鼠标控制** — 触控板表面支持移动 / 点击 / 双击后按住拖动 / 滚轮
 - **快捷键** — Enter / Tab / Backspace / Copy / Paste
 - **自动发送** — 输入停顿后自动发送（IME 安全，中文拼音选词期间不触发）
-- **系统托盘 + 后台运行** — 关终端不会杀进程；Windows 下双击 exe 直接后台运行
+- **系统托盘 + 后台运行** — 关终端不会杀进程；Windows 下双击 exe、macOS 下双击 .app 直接后台运行
 - **Token 持久化** — `--token` 让扫码 URL 在重启后保持不变
 - **多设备** — 给每台 PC 设 `--name`，手机端可区分
 
@@ -31,12 +31,15 @@ cargo install --path .
 
 在 [Releases](https://github.com/wuyan19/qrctrl/releases) 页面下载对应平台的二进制。
 
-> **macOS 用户**：二进制未签名。下载后：
-> 1. 如果 macOS 提示「无法打开，因为来自身份不明的开发者」，执行：
->    ```shell
->    xattr -d com.apple.quarantine qrctrl-*
->    ```
-> 2. 在「系统设置 → 隐私与安全性 → 辅助功能」中授予 **Accessibility** 权限（键盘注入必需）。
+> **macOS 用户**：每个架构发布两个产物——裸二进制（`qrctrl-<arch>-macos`）和 `.app` 包（`qrctrl-<arch>-macos.app.zip`）。
+>
+> - **要双击后台运行**：下 `.app.zip`，Finder 双击解压，再双击 `qrctrl.app`。不弹 Terminal、不进 Dock、只有托盘。拖进 `/Applications` 后可从 Spotlight 启动。
+> - **要走命令行**：下裸二进制，`chmod +x`，在 shell 里运行。
+>
+> bundle 未签名（仅 ad-hoc 签名）。首次启动会被 macOS 拦截「来自身份不明的开发者」：
+> 1. 解压后在 Finder 右键 `qrctrl.app` → **打开** → 弹窗里再点 **打开**。一次性放行，后续直接双击即可。
+> 2. 或在终端运行 `xattr -dr com.apple.quarantine /path/to/qrctrl.app`
+> 3. 在「系统设置 → 隐私与安全性 → 辅助功能」中授予 **Accessibility** 权限（键盘注入必需）。
 
 > **Windows 用户**：release 构建使用 GUI 子系统——在资源管理器双击 `qrctrl.exe` 即可后台运行（无 cmd 黑窗，无父终端可关）。首次启动会自动弹出二维码窗口。系统托盘图标提供菜单（复制 URL / 显示二维码 / 退出）。
 
@@ -118,6 +121,8 @@ qrctrl -a 127.0.0.1 -p 9000 -n "测试"   # 短参数形式
 
 Windows 下 release 构建是 GUI 子系统二进制——从资源管理器双击 `qrctrl.exe` 静默启动（无 cmd 黑窗，无父终端可误关）。首次启动自动弹出二维码窗口。从终端（PowerShell / cmd）启动时 banner 仍正常打印。
 
+macOS 下 `.app` bundle 的 `Info.plist` 设了 `LSUIElement=true`，Finder 双击 `qrctrl.app` 会以「背景 UI 应用」(agent) 方式启动——不弹 Terminal、不进 Dock，关任何窗口（或注销重登）都不会杀进程。首次启动自动弹出二维码窗口（此路径下 stdout 不是 TTY，触发自动弹窗逻辑）。命令行用户仍可走 `qrctrl.app/Contents/MacOS/qrctrl` 在 shell 里跑，banner 照常打印。
+
 ## 工作原理
 
 - PC 在配置的 `addr:port` 上跑 HTTP + WebSocket 服务。HTTP 层在 `/` 提供静态控制面板，在 `/upload/{id}` + `/download/{id}` 流式传输文件。
@@ -146,6 +151,14 @@ cargo build --release    # 发布构建（Windows 下 GUI 子系统，LTO + stri
 cargo test               # 跑单元测试
 ```
 
+本地组装 macOS `.app` bundle：
+
+```shell
+cargo build --release
+./scripts/build-macos-app.sh                            # 产出 target/release/qrctrl.app
+TARGET_TRIPLE=aarch64-apple-darwin ./scripts/build-macos-app.sh  # 跨 target
+```
+
 未实现功能的设计草稿（快捷键序列、Metadata+Blob 架构、TLS、宏按钮）见 [docs/future.md](docs/future.md)。
 
 从新的 `assets/icon.png` 重新生成 `assets/tray-icon.png`：
@@ -167,7 +180,7 @@ powershell -ExecutionPolicy Bypass -File scripts\regen-tray-icon.ps1
 - [x] 多网卡 IP 选择（`--prefer-ip`）
 - [x] 固定 token 保持扫码 URL（`--token`）
 - [x] 系统托盘 + graceful shutdown
-- [x] Windows 后台运行（GUI 子系统）
+- [x] Windows（GUI 子系统）与 macOS（`.app` bundle + `LSUIElement`）后台运行
 - [x] 双击启动自动弹出二维码窗口
 
 未来计划：
