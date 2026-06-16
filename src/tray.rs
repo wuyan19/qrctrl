@@ -54,7 +54,9 @@ struct QrWindowState {
 }
 
 pub fn run_tray_event_loop(state: TrayState, shutdown_notify: Arc<Notify>) {
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    // mut 仅 macOS 需要（set_activation_policy 是 &mut self），其他平台会触发 unused_mut
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
 
     // macOS: 强制 Accessory + 隐藏 Dock。LSUIElement=true 只在 plist 启动阶段生效，
     // tao 的 launched() 会按内部默认（Regular）调 NSApp.setActivationPolicy，
