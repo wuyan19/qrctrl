@@ -5,8 +5,10 @@ mod net;
 mod qr;
 mod state;
 mod token;
+mod tray;
 mod ws;
 
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,8 +16,10 @@ use std::time::Duration;
 use axum::{response::Html, routing::{get, post}, Router};
 use clap::Parser;
 use enigo::{Enigo, Settings};
+use tokio::sync::Notify;
 
 use crate::state::AppState;
+use crate::tray::TrayState;
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
 
@@ -57,10 +61,10 @@ struct Cli {
     prefer_ip: Option<String>,
 }
 
-fn resolve_name(cli_name: Option<String>) -> String {
+fn resolve_name(cli_name: &Option<String>) -> String {
     if let Some(n) = cli_name {
         if !n.trim().is_empty() {
-            return n;
+            return n.clone();
         }
     }
     hostname::get()
@@ -78,8 +82,7 @@ fn resolve_save_dir(cli_save_dir: Option<PathBuf>) -> PathBuf {
     base.join("qrctrl")
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let cli = Cli::parse();
 
     let token = match &cli.token {
@@ -89,16 +92,73 @@ async fn main() {
         }
         None => token::generate_token(),
     };
+    let name = resolve_name(&cli.name);
+    let port = cli.port;
+
+    // 收集局域网候选 IP，应用 --prefer-ip 过滤（若提供）
+    let all_candidates = net::list_local_ipv4s();
+    let candidates = match &cli.prefer_ip {
+        Some(p) => net::filter_by_subnet(&all_candidates, p),
+        None => all_candidates.clone(),
+    };
+    let url = match candidates.first() {
+        Some(ip) => format!("http://{}:{}/?t={}", ip, port, token),
+        None => {
+            eprintln!("[警告] 未检测到局域网 IPv4，回退到 localhost");
+            format!("http://localhost:{}/?t={}", port, token)
+        }
+    };
+
+    // banner 先打印（用 & 借，不 move）
+    print_banner(&name, &url, &candidates, &cli);
+
+    // shutdown 通知：tray 退出菜单触发 → server graceful shutdown
+    let shutdown_notify = Arc::new(Notify::new());
+
+    // server 跑在子线程：tokio runtime + axum。
+    // 主线程必须留给 tao event loop（macOS NSApplication 主线程约束）。
+    let server_shutdown = shutdown_notify.clone();
+    let server_name = name.clone();
+    let server_handle = std::thread::Builder::new()
+        .name("qrctrl-server".to_string())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime 初始化失败");
+            rt.block_on(async_main(cli, token, server_name, server_shutdown));
+        })
+        .expect("server 线程启动失败");
+
+    // 主线程跑 tray 事件循环（阻塞，直到用户选退出）
+    let tray_state = TrayState {
+        device_name: name,
+        url,
+    };
+    tray::run_tray_event_loop(tray_state, shutdown_notify.clone());
+
+    // tray 退出后等 server 关闭（graceful shutdown）
+    println!("[qrctrl] 正在退出...");
+    if server_handle.join().is_err() {
+        eprintln!("[qrctrl] server 线程 panic，强制退出");
+        std::process::exit(1);
+    }
+}
+
+async fn async_main(
+    cli: Cli,
+    token: String,
+    name: String,
+    shutdown_notify: Arc<Notify>,
+) {
     let enigo = Enigo::new(&Settings::default()).expect("Enigo 初始化失败");
     let cb = clipboard::new_handle().expect("剪贴板初始化失败");
-    let name = resolve_name(cli.name);
     let save_dir = resolve_save_dir(cli.save_dir);
     tokio::fs::create_dir_all(&save_dir)
         .await
         .unwrap_or_else(|e| panic!("创建 save_dir 失败 {}: {}", save_dir.display(), e));
 
     let registry = file_transfer::TransferRegistry::default();
-    // 后台清理过期 transfer 项，避免内存堆积
     {
         let reg = registry.clone();
         tokio::spawn(async move {
@@ -127,23 +187,24 @@ async fn main() {
         .with_state(state);
 
     let bind = format!("{}:{}", cli.addr, cli.port);
-    let listener = tokio::net::TcpListener::bind(&bind).await.expect("端口绑定失败");
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .expect("端口绑定失败");
 
-    // 收集局域网候选 IP，应用 --prefer-ip 过滤（若提供）
-    let all_candidates = net::list_local_ipv4s();
-    let candidates = match &cli.prefer_ip {
-        Some(p) => net::filter_by_subnet(&all_candidates, p),
-        None => all_candidates.clone(),
+    // graceful shutdown：tray 退出菜单触发 notify，server 收到信号后优雅关闭
+    let shutdown_signal = async move {
+        shutdown_notify.notified().await;
     };
 
-    let url = match candidates.first() {
-        Some(ip) => format!("http://{}:{}/?t={}", ip, cli.port, token),
-        None => {
-            eprintln!("[警告] 未检测到局域网 IPv4，回退到 localhost");
-            format!("http://localhost:{}/?t={}", cli.port, token)
-        }
-    };
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal)
+        .await
+        .unwrap();
+}
 
+fn print_banner(name: &str, url: &str, candidates: &[Ipv4Addr], cli: &Cli) {
+    let save_dir = resolve_save_dir(cli.save_dir.clone());
+    let token_in_url = url.rsplit_once("t=").map(|(_, t)| t).unwrap_or("");
     println!("============================================");
     println!(" qrctrl 已启动 · 设备名：{}", name);
     println!("--------------------------------------------");
@@ -152,21 +213,18 @@ async fn main() {
     println!("--------------------------------------------");
     println!(" 手机扫码连接（相机/微信扫一扫）：");
     println!();
-    let _ = qr::render_qr_to_terminal(&url);
+    let _ = qr::render_qr_to_terminal(url);
     println!();
     println!("--------------------------------------------");
     println!(" 或手动输入 URL：");
     println!("   {}", url);
-    // 多网卡场景：把其他候选 IP 也列出来，让用户能挑手机所在网段那个扫
     if candidates.len() > 1 {
         println!("--------------------------------------------");
         println!(" 检测到多个网卡 IP，监听 0.0.0.0 全部可访问：");
         for ip in &candidates[1..] {
-            println!("   http://{}:{}/?t={}", ip, cli.port, token);
+            println!("   http://{}:{}/?t={}", ip, cli.port, token_in_url);
         }
     }
     println!("============================================");
-    println!("\n监听 {}，按 Ctrl+C 退出\n", bind);
-
-    axum::serve(listener, app).await.unwrap();
+    println!("\n监听 {}:{}，托盘图标常驻，菜单选择退出\n", cli.addr, cli.port);
 }

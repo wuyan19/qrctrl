@@ -9,6 +9,8 @@ use local_ip_address::list_afinet_netifas;
 /// - 169.254/16 link-local（DHCP 失败时的自动配置）
 /// - 192.18/15 RFC 2544 benchmark 保留段（192.18.0.0 - 192.19.255.255），
 ///   部分本地 VPN（OpenVPN / Clash 等）默认用它做内部地址
+/// - 198.18/15 RFC 2544 / RFC 6815 benchmark 保留段（198.18.0.0 - 198.19.255.255），
+///   同样常被 VPN（Clash / OpenVPN 等）用作内部地址
 /// - 192.168.56/21 VirtualBox 默认 host-only 网段（192.168.56.0 - 192.168.63.255）
 ///
 /// 不在此函数过滤 WSL / Docker / Hyper-V —— 它们和正常公司内网都用 172.16/12
@@ -24,6 +26,10 @@ pub fn is_likely_lan(ip: Ipv4Addr) -> bool {
     }
     // RFC 2544: 192.18.0.0/15（192.18.x.x - 192.19.x.x）
     if o[0] == 192 && (o[1] & 0xFE) == 18 {
+        return false;
+    }
+    // RFC 2544 / RFC 6815: 198.18.0.0/15（198.18.x.x - 198.19.x.x）
+    if o[0] == 198 && (o[1] & 0xFE) == 18 {
         return false;
     }
     // VirtualBox 默认 host-only: 192.168.56.0/21（56-63）
@@ -150,6 +156,14 @@ mod tests {
         assert!(!is_likely_lan(Ipv4Addr::new(192, 18, 0, 1)));
         assert!(!is_likely_lan(Ipv4Addr::new(192, 18, 200, 50)));
         assert!(!is_likely_lan(Ipv4Addr::new(192, 19, 255, 254)));
+    }
+
+    #[test]
+    fn rejects_rfc6815_benchmark_range() {
+        // RFC 2544 / RFC 6815: 198.18.0.0/15（198.18-198.19），Clash / OpenVPN 用此段
+        assert!(!is_likely_lan(Ipv4Addr::new(198, 18, 0, 1)));
+        assert!(!is_likely_lan(Ipv4Addr::new(198, 18, 200, 50)));
+        assert!(!is_likely_lan(Ipv4Addr::new(198, 19, 255, 254)));
     }
 
     #[test]

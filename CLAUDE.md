@@ -46,7 +46,9 @@ CLI 参数：
 
 **模块职责：**
 
-- **`main.rs`** — 程序入口。用 `clap::Parser`（derive 风格）解析 CLI 参数；`resolve_name()` 决定设备名（`--name` 优先 → 系统主机名 → 兜底 `"qrctrl"`）；初始化 enigo + 剪贴板句柄；构造 AppState；装配 axum 路由（`/` 返回静态 HTML、`/ws` 升级 WebSocket）；绑定 `addr:port`；生成扫码 URL；调用 qr 模块渲染二维码到终端。token 嵌入 URL 查询参数，未带 token 或 token 不匹配时 WebSocket 升级返回 401。启动横幅里同时显示设备名，方便多实例时区分。
+- **`main.rs`** — 程序入口。用 `clap::Parser`（derive 风格）解析 CLI 参数；`resolve_name()` 决定设备名（`--name` 优先 → 系统主机名 → 兜底 `"qrctrl"`）；计算扫码 URL（多网卡筛选 + `--prefer-ip`）；打印 banner（QR 码 + URL）；启动 server 线程（tokio runtime + axum）；主线程跑 `tray::run_tray_event_loop`（阻塞）。tray 退出 → `Notify::notify_waiters` → server graceful shutdown → `join` server 线程后退出。
+
+- **`tray.rs`** — 系统托盘。tao event loop 主线程跑（macOS NSApplication 强制主线程），tray icon + 菜单（复制 URL / 显示二维码 / 退出）。QR 码窗口用 softbuffer 在 tao Window 上直接画像素，避免依赖系统图片查看器。tray-icon 在 `Event::NewEvents(StartCause::Init)` 内创建（避免过早创建 panic）。`Arc<Notify>` 与 server 线程协调退出。
 
 - **`token.rs`** — 生成一次性随机 token（字母数字组合），用于扫码 URL 鉴权。
 
@@ -58,9 +60,9 @@ CLI 参数：
 
 - **`clipboard.rs`** — arboard 包装。`ClipboardHandle = Arc<Mutex<arboard::Clipboard>>` 类型别名；纯函数 `decode_bytes_to_rgba` / `encode_rgba_to_png_base64` / `decode_base64`（不接触 arboard，便于单测）；副作用函数 `read_text` / `read_image_png_base64` / `write_image_from_bytes`（必须 spawn_blocking 调用）。`read_image_png_base64` 内部**优先调 `cb.get().file_list()`**：用户从 Finder / 资源管理器 Cmd+C 复制图片文件时，剪贴板里是文件引用而不是位图，`get_image()` 返回的是系统占位图标；只有文件列表为空或文件不是图片时才降级到 `get_image()`。常量：`MAX_PIXELS = 40_000_000`（解码后内存上限）、`MAX_IMG_B64 = 10_000_000`（base64 字符串上限）。
 
-- **`net.rs`** — 局域网 IP 候选筛选，用于生成扫码 URL。`list_local_ipv4s()` 通过 `list_afinet_netifas()` 枚举所有网卡 IPv4，用 `is_likely_lan()` 保守过滤（排除 loopback 127/8、link-local 169.254/16、VirtualBox 默认 host-only 192.168.56/21），WSL / Docker / Hyper-V 网段不主动过滤（与正常内网难区分，让用户用 `--prefer-ip` 收窄）。`filter_by_subnet(ips, prefix)` 按子网前缀过滤候选，没匹配时返回原列表（让用户看到所有可选项，而不是空）。取不到候选时 main.rs 回退到 localhost。
+- **`qr.rs`** — `render_qr_to_terminal(text)` 用 Unicode 半角块字符（`█▀▄`）把二维码渲染到终端，每字符表示 2×2 个 QR 模块，扫描体验最好。`render_qr_to_pixels(text, scale, border)` 把 QR 渲染成 `Vec<u32>`（XRGB8888），供 tray 模块的二维码窗口用 softbuffer 直接显示。
 
-- **`qr.rs`** — `render_qr_to_terminal(text)` 用 Unicode 半角块字符（`█▀▄`）把二维码渲染到终端，每字符表示 2×2 个 QR 模块，扫描体验最好。
+- **`net.rs`** — 局域网 IP 候选筛选，用于生成扫码 URL。`list_local_ipv4s()` 通过 `list_afinet_netifas()` 枚举所有网卡 IPv4，用 `is_likely_lan()` 保守过滤（排除 loopback 127/8、link-local 169.254/16、RFC 2544 / RFC 6815 benchmark 段 192.18/15 和 198.18/15、VirtualBox 默认 host-only 192.168.56/21），再用 `is_virtual_interface()` 按接口名排除 WSL / Docker / Hyper-V / VMware / VPN 隧道网卡。`filter_by_subnet(ips, prefix)` 按子网前缀过滤候选，没匹配时返回原列表（让用户看到所有可选项，而不是空）。取不到候选时 main.rs 回退到 localhost。
 
 ## 金丝雀规则
 
@@ -82,7 +84,8 @@ CLI 参数：
 - **自动发送**：前端 checkbox 开关，`input` 事件后停顿 600ms 自动发送；用 `compositionstart` / `compositionend` 跟踪 IME 状态，中文拼音选词期间不触发。手动 Enter / 发送按钮 / 清空按钮都会取消 pending timer。
 - **大小限制**：文本 100 KB（超出截断，仍发送）；图片 base64 原文 10 MB（超出 `too_large`）；图片像素总数 ≤ 4000 万（防 RGBA 内存爆炸）。axum WebSocket 默认 `max_message_size = 64 MB`，无需调整。
 - **断线重连**：前端实现指数退避重连（1s → 2s → 4s → ... 上限 10s），后端无状态。
-- **平台条件编译**：当前代码无 `#[cfg]` 分支，arboard / enigo / hostname 库自己处理平台差异。Linux 上 enigo 需要 `libxtst-dev`、`libx11-dev`、`libxdo-dev`（CI 中已配置）。
+- **平台条件编译**：当前代码无 `#[cfg]` 分支，arboard / enigo / hostname 库自己处理平台差异。Linux 上 enigo 需要 `libxtst-dev`、`libx11-dev`、`libxdo-dev`（CI 中已配置）。Linux 上 tray-icon / tao 还需要 `libgtk-3-dev`、`libayatana-appindicator3-dev`（或老版 `libappindicator3-dev`）。
+- **系统托盘**：tray-icon + tao + softbuffer 实现。线程模型：主线程跑 tao event loop（macOS NSApplication 强制），server 的 tokio runtime 跑在子线程；退出通过 `tokio::sync::Notify` 协调，axum `with_graceful_shutdown` 让 server 优雅关闭（避免上传半成品文件残留）。binary 增加 ~400 KB（Windows release）。
 - **错误处理**：启动期错误（端口绑定失败、enigo/clipboard 初始化失败）用 `expect` 直接 panic；运行时错误（WebSocket 错误、注入失败、剪贴板错误）用 `eprintln!` 记录后继续，不退出服务器。`CbError` 映射为协议错误码字符串（`empty` / `clipboard_busy` / `decode_failed` / `too_large` / `internal`）。
 
 ## 扩展计划
