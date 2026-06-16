@@ -20,6 +20,8 @@ use tao::dpi::PhysicalSize;
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopWindowTarget};
 use tao::window::{Window, WindowBuilder};
+#[cfg(target_os = "macos")]
+use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, EventLoopWindowTargetExtMacOS};
 use tokio::sync::Notify;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
@@ -53,6 +55,17 @@ struct QrWindowState {
 
 pub fn run_tray_event_loop(state: TrayState, shutdown_notify: Arc<Notify>) {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+
+    // macOS: 强制 Accessory + 隐藏 Dock。LSUIElement=true 只在 plist 启动阶段生效，
+    // tao 的 launched() 会按内部默认（Regular）调 NSApp.setActivationPolicy，
+    // 不显式覆盖就会冒出 Dock 图标——右键 Dock Quit 会发 terminate: 杀掉整个托盘进程。
+    // 这里改 tao 内部状态，让 launched() 时 setActivationPolicy(Accessory)；
+    // window 创建后再用 set_activation_policy_at_runtime 强推一次（见 open_qr_window）。
+    #[cfg(target_os = "macos")]
+    {
+        event_loop.set_activation_policy(ActivationPolicy::Accessory);
+        event_loop.set_dock_visibility(false);
+    }
 
     let proxy = event_loop.create_proxy();
     TrayIconEvent::set_event_handler(Some(move |e| {
@@ -165,6 +178,11 @@ fn open_qr_window(
             .build(target)
             .map_err(|e| format!("window build: {}", e))?,
     );
+
+    // macOS: window 创建可能让 NSApp 重置激活策略到 Regular（Dock 图标再次出现），
+    // 强推回 Accessory。每次开 QR 窗口都调一次，开销可忽略。
+    #[cfg(target_os = "macos")]
+    target.set_activation_policy_at_runtime(ActivationPolicy::Accessory);
 
     let context =
         softbuffer::Context::new(Rc::clone(&window)).map_err(|e| format!("context: {}", e))?;
