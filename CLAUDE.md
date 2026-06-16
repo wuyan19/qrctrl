@@ -31,7 +31,10 @@ CLI 参数：
 | `--addr` | `-a` | `0.0.0.0` | 监听地址 |
 | `--port` | `-p` | `8080` | 监听端口 |
 | `--name` | `-n` | 系统主机名 | 设备名称（手机端显示用） |
+| `--save-dir` | — | `<下载目录>/qrctrl/` | 手机上传文件的保存目录 |
+| `--max-size` | — | `10737418240`（10 GB） | 单文件大小上限（字节） |
 | `--token` | — | 随机生成 | 固定 token（4-64 位 ASCII 字母数字）。提供后重启程序扫码 URL 不变，手机端刷新即可重连 |
+| `--prefer-ip` | — | — | 偏好的 IP 子网前缀（如 `192.168.20`），多网卡时用来挑 QR 码用的 IP。不匹配时回退到全部候选 |
 | `--help` | `-h` | — | 帮助 |
 | `--version` | `-V` | — | 版本（来自 Cargo.toml） |
 
@@ -49,13 +52,13 @@ CLI 参数：
 
 - **`state.rs`** — `AppState` 结构体，包含 `token: String`、`name: String`、`enigo: Arc<Mutex<Enigo>>`、`clipboard: ClipboardHandle`（即 `Arc<Mutex<arboard::Clipboard>>`）。`#[derive(Clone)]` 满足 axum State 的 Clone + Send + Sync 要求。enigo 和 clipboard 用**独立 Mutex**——两件事无逻辑互斥关系；共用会拖慢（注入长文本期间无法读剪贴板）。两者都用 `Arc<Mutex<...>>` 包裹，因为 macOS 上 Enigo/Clipboard 都实现了 Send 但没实现 Sync（详见 `tests/send_sync_invariants.rs`）。
 
-- **`ws.rs`** — WebSocket 处理 + JSON 协议分发。`ws_handler` 校验 token；`handle_socket` 升级后**立即推送 `server_info`**（含设备名），然后进入循环接收消息（文本指令通过 `dispatch` 处理后用 `socket.send()` 回包，Close 或 Err 退出）；`dispatch` 反序列化 JSON Command 并路由到对应处理器，所有阻塞调用（enigo.text / arboard.read / arboard.write）都通过 `tokio::task::spawn_blocking` 丢到阻塞线程池。Command 枚举用 `#[serde(tag = "type", rename_all = "snake_case")]`，4 个 variant：`Text` / `GetClipboardText` / `GetClipboardImage` / `SetClipboardImage`。
+- **`ws.rs`** — WebSocket 处理 + JSON 协议分发。`ws_handler` 校验 token；`handle_socket` 升级后**立即推送 `server_info`**（含设备名），然后进入循环接收消息（文本指令通过 `dispatch` 处理后用 `socket.send()` 回包，Close 或 Err 退出）；`dispatch` 反序列化 JSON Command 并路由到对应处理器，所有阻塞调用（enigo.text / arboard.read / arboard.write）都通过 `tokio::task::spawn_blocking` 丢到阻塞线程池。Command 枚举用 `#[serde(tag = "type", rename_all = "snake_case")]`，目前 variant：`Text` / `GetClipboardText` / `GetClipboardImage` / `SetClipboardImage` / `UploadStart` / `GetFile` / `Enter` / `Tab` / `Backspace` / `Copy` / `Paste` / `MouseMove` / `MouseClick` / `MousePress` / `MouseRelease` / `MouseScroll`。
 
 - **`inject.rs`** — `inject_text(enigo, text)` 锁住 Mutex 后调用 `Enigo::text()` 注入文本。这是 enigo 的 Unicode 注入路径，**不依赖当前键盘布局或输入法状态**，跨平台一致。
 
 - **`clipboard.rs`** — arboard 包装。`ClipboardHandle = Arc<Mutex<arboard::Clipboard>>` 类型别名；纯函数 `decode_bytes_to_rgba` / `encode_rgba_to_png_base64` / `decode_base64`（不接触 arboard，便于单测）；副作用函数 `read_text` / `read_image_png_base64` / `write_image_from_bytes`（必须 spawn_blocking 调用）。`read_image_png_base64` 内部**优先调 `cb.get().file_list()`**：用户从 Finder / 资源管理器 Cmd+C 复制图片文件时，剪贴板里是文件引用而不是位图，`get_image()` 返回的是系统占位图标；只有文件列表为空或文件不是图片时才降级到 `get_image()`。常量：`MAX_PIXELS = 40_000_000`（解码后内存上限）、`MAX_IMG_B64 = 10_000_000`（base64 字符串上限）。
 
-- **`net.rs`** — `get_local_ipv4()` 找一个非 loopback 的局域网 IPv4 地址，用于生成扫码 URL。取不到时 main.rs 回退到 localhost。
+- **`net.rs`** — 局域网 IP 候选筛选，用于生成扫码 URL。`list_local_ipv4s()` 通过 `list_afinet_netifas()` 枚举所有网卡 IPv4，用 `is_likely_lan()` 保守过滤（排除 loopback 127/8、link-local 169.254/16、VirtualBox 默认 host-only 192.168.56/21），WSL / Docker / Hyper-V 网段不主动过滤（与正常内网难区分，让用户用 `--prefer-ip` 收窄）。`filter_by_subnet(ips, prefix)` 按子网前缀过滤候选，没匹配时返回原列表（让用户看到所有可选项，而不是空）。取不到候选时 main.rs 回退到 localhost。
 
 - **`qr.rs`** — `render_qr_to_terminal(text)` 用 Unicode 半角块字符（`█▀▄`）把二维码渲染到终端，每字符表示 2×2 个 QR 模块，扫描体验最好。
 
@@ -84,10 +87,7 @@ CLI 参数：
 
 ## 扩展计划
 
-当前已实现：文本注入、双向文本/图片剪贴板同步、JSON 协议（统一，无旧版兼容）、命令行参数与设备名标识、自动发送。未来计划扩展（详见 `docs/research.md`）：
+当前已实现：文本注入、双向文本/图片剪贴板同步、JSON 协议（统一，无旧版兼容）、命令行参数与设备名标识、自动发送、Enter/Tab/Backspace/Copy/Paste 快捷键、鼠标移动/点击/拖动（双击后按住拖动）/滚轮、双向任意文件传输、多网卡 IP 候选筛选与 `--prefer-ip` 收窄、`--token` 固定 token 重启保持 URL。未来计划扩展（详见 `docs/research.md`）：
 
 - 快捷键序列（如 `Cmd+Space`、`Win+R`）
-- 鼠标移动和点击（绝对 / 相对坐标）
-- 滚轮
-- **任意文件传输**（不再区分文本/图片/文件，统一文件通道——大文件需要走 HTTP 端点，详见 `docs/research.md` 第十节）
 - 安全考虑：快捷键白名单或二次确认机制

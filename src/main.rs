@@ -49,6 +49,12 @@ struct Cli {
     /// 默认每次启动随机生成。提供时必须是 4-64 位 ASCII 字母数字。
     #[arg(long)]
     token: Option<String>,
+
+    /// 偏好的 IP 子网前缀（多网卡时用来选 QR 码用的 IP）
+    /// 例如 `--prefer-ip 192.168.20` 会优先把 192.168.20.x 的 IP 放进 QR 码。
+    /// 不匹配时回退到默认候选。
+    #[arg(long)]
+    prefer_ip: Option<String>,
 }
 
 fn resolve_name(cli_name: Option<String>) -> String {
@@ -123,7 +129,14 @@ async fn main() {
     let bind = format!("{}:{}", cli.addr, cli.port);
     let listener = tokio::net::TcpListener::bind(&bind).await.expect("端口绑定失败");
 
-    let url = match net::get_local_ipv4() {
+    // 收集局域网候选 IP，应用 --prefer-ip 过滤（若提供）
+    let all_candidates = net::list_local_ipv4s();
+    let candidates = match &cli.prefer_ip {
+        Some(p) => net::filter_by_subnet(&all_candidates, p),
+        None => all_candidates.clone(),
+    };
+
+    let url = match candidates.first() {
         Some(ip) => format!("http://{}:{}/?t={}", ip, cli.port, token),
         None => {
             eprintln!("[警告] 未检测到局域网 IPv4，回退到 localhost");
@@ -144,6 +157,14 @@ async fn main() {
     println!("--------------------------------------------");
     println!(" 或手动输入 URL：");
     println!("   {}", url);
+    // 多网卡场景：把其他候选 IP 也列出来，让用户能挑手机所在网段那个扫
+    if candidates.len() > 1 {
+        println!("--------------------------------------------");
+        println!(" 检测到多个网卡 IP，监听 0.0.0.0 全部可访问：");
+        for ip in &candidates[1..] {
+            println!("   http://{}:{}/?t={}", ip, cli.port, token);
+        }
+    }
     println!("============================================");
     println!("\n监听 {}，按 Ctrl+C 退出\n", bind);
 

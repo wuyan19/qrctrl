@@ -52,6 +52,8 @@ enum Command {
     Paste,
     MouseMove { dx: i32, dy: i32 },
     MouseClick { button: MouseButton },
+    MousePress { button: MouseButton },
+    MouseRelease { button: MouseButton },
     MouseScroll { dy: i32 },
 }
 
@@ -215,6 +217,14 @@ async fn dispatch(state: &AppState, raw: &str) -> String {
             let btn = button.into();
             inject_mouse_button_cmd(&state.enigo, btn).await
         }
+        Command::MousePress { button } => {
+            let btn = button.into();
+            inject_mouse_button_press_cmd(&state.enigo, btn).await
+        }
+        Command::MouseRelease { button } => {
+            let btn = button.into();
+            inject_mouse_button_release_cmd(&state.enigo, btn).await
+        }
         Command::MouseScroll { dy } => inject_mouse_scroll_cmd(&state.enigo, dy).await,
     }
 }
@@ -263,6 +273,48 @@ async fn inject_mouse_button_cmd(enigo: &Arc<Mutex<Enigo>>, button: enigo::Butto
         Ok(Ok(())) => ok_json(),
         Ok(Err(e)) => {
             eprintln!("[ws] 鼠标点击失败: {}", e);
+            error_json("inject_failed")
+        }
+        Err(e) => {
+            eprintln!("[ws] spawn_blocking join 失败: {}", e);
+            error_json("internal")
+        }
+    }
+}
+
+async fn inject_mouse_button_press_cmd(
+    enigo: &Arc<Mutex<Enigo>>,
+    button: enigo::Button,
+) -> String {
+    let enigo = enigo.clone();
+    let result =
+        tokio::task::spawn_blocking(move || inject::inject_mouse_button_press(&enigo, button))
+            .await;
+    match result {
+        Ok(Ok(())) => ok_json(),
+        Ok(Err(e)) => {
+            eprintln!("[ws] 鼠标按下失败: {}", e);
+            error_json("inject_failed")
+        }
+        Err(e) => {
+            eprintln!("[ws] spawn_blocking join 失败: {}", e);
+            error_json("internal")
+        }
+    }
+}
+
+async fn inject_mouse_button_release_cmd(
+    enigo: &Arc<Mutex<Enigo>>,
+    button: enigo::Button,
+) -> String {
+    let enigo = enigo.clone();
+    let result =
+        tokio::task::spawn_blocking(move || inject::inject_mouse_button_release(&enigo, button))
+            .await;
+    match result {
+        Ok(Ok(())) => ok_json(),
+        Ok(Err(e)) => {
+            eprintln!("[ws] 鼠标抬起失败: {}", e);
             error_json("inject_failed")
         }
         Err(e) => {
@@ -489,6 +541,27 @@ mod tests {
             Command::MouseScroll { dy } => assert_eq!(dy, 3),
             _ => panic!("expected MouseScroll"),
         }
+    }
+
+    #[test]
+    fn parse_mouse_press_left() {
+        let cmd: Command =
+            serde_json::from_str(r#"{"type":"mouse_press","button":"left"}"#).unwrap();
+        assert!(matches!(cmd, Command::MousePress { button: MouseButton::Left }));
+    }
+
+    #[test]
+    fn parse_mouse_release_right() {
+        let cmd: Command =
+            serde_json::from_str(r#"{"type":"mouse_release","button":"right"}"#).unwrap();
+        assert!(matches!(cmd, Command::MouseRelease { button: MouseButton::Right }));
+    }
+
+    #[test]
+    fn parse_mouse_press_middle() {
+        let cmd: Command =
+            serde_json::from_str(r#"{"type":"mouse_press","button":"middle"}"#).unwrap();
+        assert!(matches!(cmd, Command::MousePress { button: MouseButton::Middle }));
     }
 
     #[test]

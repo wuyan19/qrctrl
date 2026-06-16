@@ -524,7 +524,7 @@
       </div>
       <button id="touchpad-close">关闭</button>
     </div>
-    <div id="touch-area" class="touch-area">拖动移动光标 · 轻点 = 左键</div>
+    <div id="touch-area" class="touch-area">拖动移动 · 轻点左键 · 双击后按住拖动</div>
     <div class="touchpad-buttons">
       <button id="btn-scroll-up">⇧</button>
       <button id="btn-mouse-left">●</button>
@@ -533,7 +533,7 @@
       <button id="btn-copy">📋</button>
       <button id="btn-paste">📥</button>
     </div>
-    <div class="touchpad-hint">拖动移动 · 轻点左键 · 底部按钮：滚动 / 左右键 / 复制粘贴</div>
+    <div class="touchpad-hint">拖动移动 · 轻点左键 · 双击后按住拖动 · 底部按钮：滚动 / 左右键 / 复制粘贴</div>
   </div>
 </div>
 
@@ -803,6 +803,11 @@ const TAP_MAX_MS = 250;
 const MOVE_MIN_MS = 30;
 // 滚动步长（每次按滚动按钮的滚轮「格」数）
 const SCROLL_STEP = 3;
+// tap-tap-drag 检测窗口（两次 touch 之间的最大间隔，超过则视为独立点击）
+// 注意：单次 tap 会等这段时间才发 click，造成 ~300ms 点击延迟，是双击拖动的代价
+const TAP_TAP_GAP_MS = 300;
+// 第二次按下后累积移动达多少像素才确认进入 drag（避免轻微抖动误触发）
+const DRAG_START_DIST = 5;
 
 btnTouchpad.addEventListener('click', () => {
   syncTouchpadStatus();
@@ -816,14 +821,35 @@ function syncTouchpadStatus() {
   touchpadStatusText.textContent = open ? `${deviceName} 已连接` : '未连接';
 }
 
-// touchstart: 记录起点、时间，并清空上一帧坐标
-// touchmove: 计算与上一帧的 delta，节流后发 mouse_move
-// touchend: 若移动很小且时间很短 → 视为轻点 → 发 mouse_click left
+// 触摸状态机（实现 macOS 风格「双击后按住拖动」）：
+//   IDLE           - 没有手指
+//   TICKING        - 第一次按下，正在判断是 tap 还是 move
+//   MOVING         - 已确认是 move（光标跟随）
+//   TAP_PENDING    - 第一次 lift 是 tap；等 TAP_TAP_GAP_MS 看第二次 tap 是否到来
+//   POTENTIAL_DRAG - 第二次按下到达（已补发第一次的 click）；等移动 → drag
+//   DRAGGING       - drag 中（左键已按下）
+const TOUCH_IDLE = 0, TOUCH_TICKING = 1, TOUCH_MOVING = 2,
+      TOUCH_TAP_PENDING = 3, TOUCH_POTENTIAL_DRAG = 4, TOUCH_DRAGGING = 5;
+let touchState = TOUCH_IDLE;
+
 let touchStartX = 0, touchStartY = 0;
 let touchLastX = 0, touchLastY = 0;
 let touchStartT = 0;
 let touchLastSendT = 0;
 let touchMovedDist = 0;
+let lastTapEndT = 0;
+let pendingClickTimer = null;
+
+function sendMove(dx, dy) {
+  const now = Date.now();
+  if (now - touchLastSendT < MOVE_MIN_MS) return;
+  touchLastSendT = now;
+  send({
+    type: 'mouse_move',
+    dx: Math.round(dx * TOUCH_SENSITIVITY),
+    dy: Math.round(dy * TOUCH_SENSITIVITY),
+  });
+}
 
 touchArea.addEventListener('touchstart', (e) => {
   if (e.touches.length !== 1) return;
@@ -833,6 +859,19 @@ touchArea.addEventListener('touchstart', (e) => {
   touchStartT = Date.now();
   touchLastSendT = 0;
   touchMovedDist = 0;
+
+  if (touchState === TOUCH_TAP_PENDING &&
+      (touchStartT - lastTapEndT) < TAP_TAP_GAP_MS) {
+    // 第二次按下到达：立即补发第一次的 click，然后准备 drag
+    if (pendingClickTimer) {
+      clearTimeout(pendingClickTimer);
+      pendingClickTimer = null;
+    }
+    send({ type: 'mouse_click', button: 'left' });
+    touchState = TOUCH_POTENTIAL_DRAG;
+  } else {
+    touchState = TOUCH_TICKING;
+  }
 }, { passive: true });
 
 touchArea.addEventListener('touchmove', (e) => {
@@ -845,26 +884,75 @@ touchArea.addEventListener('touchmove', (e) => {
   touchLastY = t.clientY;
   touchMovedDist += Math.abs(dx) + Math.abs(dy);
 
-  const now = Date.now();
-  if (now - touchLastSendT < MOVE_MIN_MS) return;
-  touchLastSendT = now;
-
-  send({
-    type: 'mouse_move',
-    dx: Math.round(dx * TOUCH_SENSITIVITY),
-    dy: Math.round(dy * TOUCH_SENSITIVITY),
-  });
+  switch (touchState) {
+    case TOUCH_TICKING:
+      // 第一次 move → 进入光标跟随
+      touchState = TOUCH_MOVING;
+      sendMove(dx, dy);
+      break;
+    case TOUCH_MOVING:
+      sendMove(dx, dy);
+      break;
+    case TOUCH_POTENTIAL_DRAG:
+      // 累积移动达阈值 → 进入 drag（先按下左键）
+      if (touchMovedDist >= DRAG_START_DIST) {
+        send({ type: 'mouse_press', button: 'left' });
+        touchState = TOUCH_DRAGGING;
+        sendMove(dx, dy);
+      }
+      break;
+    case TOUCH_DRAGGING:
+      sendMove(dx, dy);
+      break;
+  }
 }, { passive: false });
 
 touchArea.addEventListener('touchend', () => {
   const dt = Date.now() - touchStartT;
-  if (touchMovedDist < TAP_MAX_DIST && dt < TAP_MAX_MS) {
-    send({ type: 'mouse_click', button: 'left' });
+  switch (touchState) {
+    case TOUCH_TICKING: {
+      // 短促且不动 → 视为 tap；等 TAP_TAP_GAP_MS 看是否双击
+      if (touchMovedDist < TAP_MAX_DIST && dt < TAP_MAX_MS) {
+        touchState = TOUCH_TAP_PENDING;
+        lastTapEndT = Date.now();
+        if (pendingClickTimer) clearTimeout(pendingClickTimer);
+        pendingClickTimer = setTimeout(() => {
+          pendingClickTimer = null;
+          if (touchState === TOUCH_TAP_PENDING) {
+            send({ type: 'mouse_click', button: 'left' });
+            touchState = TOUCH_IDLE;
+          }
+        }, TAP_TAP_GAP_MS);
+      } else {
+        touchState = TOUCH_IDLE;
+      }
+      break;
+    }
+    case TOUCH_MOVING:
+      touchState = TOUCH_IDLE;
+      break;
+    case TOUCH_POTENTIAL_DRAG:
+      // 第二次按下后没拖动就抬起 → 这次也算 tap（与补发的 click 合成双击）
+      send({ type: 'mouse_click', button: 'left' });
+      touchState = TOUCH_IDLE;
+      break;
+    case TOUCH_DRAGGING:
+      send({ type: 'mouse_release', button: 'left' });
+      touchState = TOUCH_IDLE;
+      break;
   }
 });
 
 touchArea.addEventListener('touchcancel', () => {
-  // 中断（如来电）不做点击
+  // 中断（如来电）时若在 drag，补一次 release 防止左键卡住
+  if (touchState === TOUCH_DRAGGING) {
+    send({ type: 'mouse_release', button: 'left' });
+  }
+  if (pendingClickTimer) {
+    clearTimeout(pendingClickTimer);
+    pendingClickTimer = null;
+  }
+  touchState = TOUCH_IDLE;
 });
 
 btnMouseLeft.addEventListener('click', () => send({ type: 'mouse_click', button: 'left' }));

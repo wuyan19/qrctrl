@@ -33,6 +33,20 @@ pub fn inject_mouse_button(enigo: &Arc<Mutex<Enigo>>, button: Button) -> Result<
         .map_err(|e| format!("mouse button error: {}", e))
 }
 
+/// 按下鼠标按钮（不抬起）。用于拖拽手势的开始。
+pub fn inject_mouse_button_press(enigo: &Arc<Mutex<Enigo>>, button: Button) -> Result<(), String> {
+    let mut e = enigo.lock().map_err(|e| format!("lock error: {}", e))?;
+    e.button(button, enigo::Direction::Press)
+        .map_err(|e| format!("mouse press error: {}", e))
+}
+
+/// 抬起鼠标按钮。用于拖拽手势的结束。
+pub fn inject_mouse_button_release(enigo: &Arc<Mutex<Enigo>>, button: Button) -> Result<(), String> {
+    let mut e = enigo.lock().map_err(|e| format!("lock error: {}", e))?;
+    e.button(button, enigo::Direction::Release)
+        .map_err(|e| format!("mouse release error: {}", e))
+}
+
 /// 滚动鼠标滚轮。amount 为正向下 / 向右，为负向上 / 向左。
 pub fn inject_mouse_scroll(enigo: &Arc<Mutex<Enigo>>, amount: i32, axis: Axis) -> Result<(), String> {
     let mut e = enigo.lock().map_err(|e| format!("lock error: {}", e))?;
