@@ -69,8 +69,11 @@ struct Cli {
 /// 如果是从 cmd/PowerShell 启动的（有父 console），attach 上并把 std handle
 /// 重绑过去——这样 banner / --help / --version / panic 都能正常输出。
 /// 双击启动时 AttachConsole 失败（无父 console），静默跳过，程序继续。
+///
+/// 返回 true 表示当前进程**有可用的 stdout**（已有 console 或 attach 成功）；
+/// 返回 false 表示无 console（双击启动），调用方据此决定是否自动弹 GUI 二维码窗口。
 #[cfg(target_os = "windows")]
-fn attach_parent_console() {
+fn attach_parent_console() -> bool {
     use std::ptr;
     use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::{
@@ -85,10 +88,10 @@ fn attach_parent_console() {
         // 已有 stdout（console subsystem 直接启动，或 debug 模式）→ 不需要 attach
         let existing = GetStdHandle(STD_OUTPUT_HANDLE);
         if !existing.is_null() && existing != INVALID_HANDLE_VALUE {
-            return;
+            return true;
         }
         if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
-            return; // 双击启动，无父 console
+            return false; // 双击启动，无父 console
         }
         let name = b"CONOUT$\0";
         let out = CreateFileA(
@@ -101,10 +104,11 @@ fn attach_parent_console() {
             ptr::null_mut(),
         );
         if out.is_null() || out == INVALID_HANDLE_VALUE {
-            return;
+            return false;
         }
         SetStdHandle(STD_OUTPUT_HANDLE, out);
         SetStdHandle(STD_ERROR_HANDLE, out);
+        true
     }
 }
 
@@ -130,8 +134,12 @@ fn resolve_save_dir(cli_save_dir: Option<PathBuf>) -> PathBuf {
 }
 
 fn main() {
+    // has_console = 是否有可用的 stdout。双击启动时为 false（自动弹 GUI 二维码窗口），
+    // PowerShell/cmd/terminal 启动时为 true（banner 在终端显示，不需要 GUI 弹窗）。
     #[cfg(target_os = "windows")]
-    attach_parent_console();
+    let has_console = attach_parent_console();
+    #[cfg(not(target_os = "windows"))]
+    let has_console = std::io::IsTerminal::is_terminal(&std::io::stdout());
 
     let cli = Cli::parse();
 
@@ -184,6 +192,7 @@ fn main() {
     let tray_state = TrayState {
         device_name: name,
         url,
+        auto_show_qr: !has_console,
     };
     tray::run_tray_event_loop(tray_state, shutdown_notify.clone());
 

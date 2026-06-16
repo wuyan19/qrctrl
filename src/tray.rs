@@ -29,6 +29,8 @@ use crate::qr;
 pub struct TrayState {
     pub device_name: String,
     pub url: String,
+    /// 双击启动（无 console、无 banner）时为 true，tray 初始化后自动弹 QR 码窗口。
+    pub auto_show_qr: bool,
 }
 
 enum UserEvent {
@@ -90,6 +92,15 @@ pub fn run_tray_event_loop(state: TrayState, shutdown_notify: Arc<Notify>) {
                         .build()
                         .expect("tray icon build"),
                 );
+
+                // 双击启动（无 console、无 banner）时自动弹 QR 码窗口，
+                // 让用户立刻能扫。从 PowerShell/terminal 启动时 banner 已有，不重复弹。
+                if state.auto_show_qr {
+                    match open_qr_window(target, &state.url) {
+                        Ok(w) => qr_window = Some(w),
+                        Err(e) => eprintln!("[tray] 自动显示二维码失败: {}", e),
+                    }
+                }
             }
             Event::UserEvent(UserEvent::MenuEvent(e)) => {
                 if e.id == copy_url_i.id() {
