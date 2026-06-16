@@ -11,8 +11,9 @@ use local_ip_address::list_afinet_netifas;
 ///   部分本地 VPN（OpenVPN / Clash 等）默认用它做内部地址
 /// - 192.168.56/21 VirtualBox 默认 host-only 网段（192.168.56.0 - 192.168.63.255）
 ///
-/// 不主动过滤 WSL / Docker / Hyper-V —— 它们和正常公司内网都用 172.16/12
-/// 或 10/8，无法可靠区分；用户用 `--prefer-ip` 来收窄。
+/// 不在此函数过滤 WSL / Docker / Hyper-V —— 它们和正常公司内网都用 172.16/12
+/// 或 10/8，IP 段无法可靠区分；改由 `is_virtual_interface` 用接口名识别，
+/// 在 `list_local_ipv4s` 里整体排除。
 pub fn is_likely_lan(ip: Ipv4Addr) -> bool {
     let o = ip.octets();
     if o[0] == 127 {
@@ -32,22 +33,68 @@ pub fn is_likely_lan(ip: Ipv4Addr) -> bool {
     true
 }
 
+/// 虚拟网卡 / VPN 隧道接口的命名关键字。匹配到的接口默认从候选中排除。
+///
+/// 取自 Windows / macOS / Linux 上各虚拟化 / 容器 / VPN 工具的常见命名：
+/// - `vethernet`：Hyper-V 虚拟网卡（含 WSL2 vEthernet (WSL)、Default Switch 等）
+/// - `wsl`：WSL2 子系统网卡（Linux 接口名也可能含 wsl）
+/// - `docker`：Docker bridge / NAT
+/// - `vmware` / `virtualbox` / `virtual pc`：虚拟机宿主侧虚拟网卡
+/// - `hyper-v`：Hyper-V 极少数未走 vEthernet 前缀的情况
+/// - `openvpn` / `wireguard` / `tun` / `tap`：用户态 VPN 隧道
+/// - `utun`：macOS IKEv2 / WireGuard 隧道接口
+/// - `virbr`：libvirt 默认网桥
+/// - `br-`：Docker Compose 自定义网桥
+fn is_virtual_interface(name: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "wsl",
+        "vethernet",
+        "docker",
+        "vmware",
+        "virtualbox",
+        "virtual pc",
+        "hyper-v",
+        "openvpn",
+        "wireguard",
+        "utun",
+        "virbr",
+        "br-",
+        "tunnel adapter",
+        "tap-windows",
+    ];
+    let lower = name.to_ascii_lowercase();
+    KEYWORDS.iter().any(|k| lower.contains(k))
+}
+
 /// 列出所有「看起来像」局域网的 IPv4，按地址排序去重。
+///
+/// 优先排除虚拟网卡（WSL / Docker / Hyper-V / VMware / VPN 隧道等，
+/// 靠 `is_virtual_interface` 用接口名识别）；若全部网卡都被识别为虚拟
+/// 网卡，则回退到不过滤，保证用户至少能看到候选 IP。
 pub fn list_local_ipv4s() -> Vec<Ipv4Addr> {
-    let mut out: Vec<Ipv4Addr> = list_afinet_netifas()
+    let all: Vec<(String, Ipv4Addr)> = list_afinet_netifas()
         .map(|interfaces| {
             interfaces
                 .into_iter()
-                .filter_map(|(_name, ip)| match ip {
-                    std::net::IpAddr::V4(v4) if is_likely_lan(v4) => Some(v4),
+                .filter_map(|(name, ip)| match ip {
+                    std::net::IpAddr::V4(v4) if is_likely_lan(v4) => Some((name, v4)),
                     _ => None,
                 })
                 .collect()
         })
         .unwrap_or_default();
-    out.sort();
-    out.dedup();
-    out
+
+    let mut physical: Vec<Ipv4Addr> = all
+        .iter()
+        .filter(|(name, _)| !is_virtual_interface(name))
+        .map(|(_, ip)| *ip)
+        .collect();
+    if physical.is_empty() {
+        physical = all.into_iter().map(|(_, ip)| ip).collect();
+    }
+    physical.sort();
+    physical.dedup();
+    physical
 }
 
 /// 在候选 IP 中按子网前缀过滤。
@@ -155,5 +202,41 @@ mod tests {
         let ips = vec![Ipv4Addr::new(192, 168, 1, 1)];
         assert_eq!(filter_by_subnet(&ips, ""), ips);
         assert_eq!(filter_by_subnet(&ips, "   "), ips);
+    }
+
+    #[test]
+    fn detects_wsl_vethernet_interface() {
+        // Windows 上 Hyper-V / WSL2 网卡命名格式
+        assert!(is_virtual_interface("vEthernet (WSL)"));
+        assert!(is_virtual_interface("vEthernet (Default Switch)"));
+        assert!(is_virtual_interface("vEthernet (LAN)"));
+    }
+
+    #[test]
+    fn detects_docker_vmware_interfaces() {
+        assert!(is_virtual_interface("DockerNAT"));
+        assert!(is_virtual_interface("VMware Network Adapter VMnet1"));
+        assert!(is_virtual_interface("VirtualBox Host-Only Ethernet Adapter"));
+        assert!(is_virtual_interface("docker0"));
+        assert!(is_virtual_interface("br-internal_net"));
+        assert!(is_virtual_interface("virbr0"));
+    }
+
+    #[test]
+    fn detects_vpn_tunnel_interfaces() {
+        assert!(is_virtual_interface("OpenVPN TAP-Windows6"));
+        assert!(is_virtual_interface("utun0"));
+        assert!(is_virtual_interface("WireGuard Adapter"));
+    }
+
+    #[test]
+    fn keeps_real_nic_names() {
+        // 真实网卡常见命名（中英文）都不应误杀
+        assert!(!is_virtual_interface("以太网"));
+        assert!(!is_virtual_interface("Ethernet"));
+        assert!(!is_virtual_interface("Wi-Fi"));
+        assert!(!is_virtual_interface("无线网络连接"));
+        assert!(!is_virtual_interface("en0"));
+        assert!(!is_virtual_interface("eth0"));
     }
 }
