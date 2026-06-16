@@ -58,7 +58,7 @@ qrctrl -a 127.0.0.1 -p 9000 -n "Test"   # short flags
 | Option | Short | Default | Description |
 |---|---|---|---|
 | `--addr` | `-a` | `0.0.0.0` | Listen address |
-| `--port` | `-p` | `8080` | Listen port |
+| `--port` | `-p` | `8080` (probed) | Listen port. If omitted, increments from 8080 up to 8129 until a free port is found — so double-click launches survive a busy 8080. If passed explicitly, only that port is tried and the program exits if it's taken |
 | `--name` | `-n` | system hostname | Device name shown on the phone UI |
 | `--save-dir` | — | `<download>/qrctrl/` | Where phone-uploaded files are saved |
 | `--max-size` | — | `10737418240` (10 GB) | Per-file size limit in bytes |
@@ -117,9 +117,12 @@ Run `qrctrl --name "<label>"` on each PC. The phone status bar shows `<name> con
 Once running, qrctrl lives in the system tray with a menu:
 - **Copy URL** — puts the scan URL on the clipboard for manual sharing.
 - **Show QR** — reopens the QR window if you closed it.
+- **Open save folder** — reveals the phone-upload save folder in the system file manager (Finder / Explorer / xdg-open).
 - **Quit** — triggers graceful shutdown (in-flight uploads finish before exit).
 
 On Windows the release build is a GUI-subsystem binary — double-clicking `qrctrl.exe` from File Explorer launches it silently (no cmd window, no parent terminal to accidentally close). The QR window auto-opens on first launch. From a terminal (PowerShell / cmd) the banner is still printed normally.
+
+Port-conflict auto-recovery: without `--port`, qrctrl probes from 8080 upward (up to 8129) and binds the first free one — so a double-click launch doesn't silently crash when something else is already on 8080. With `--port` passed explicitly, only that port is tried and the program exits if it's taken (respecting the explicit choice).
 
 On macOS the `.app` bundle sets `LSUIElement=true` in its `Info.plist`, so double-clicking `qrctrl.app` from Finder launches it as a background UI agent — no Terminal window opens, no Dock icon appears, and closing any window (or logging out/in) won't kill the process. The QR window auto-opens on first launch (since stdout isn't a TTY in that path). Power users can still run `qrctrl.app/Contents/MacOS/qrctrl` from a shell to get the banner.
 

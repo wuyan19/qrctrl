@@ -29,7 +29,7 @@ CLI 参数：
 | 参数 | 短 | 默认 | 说明 |
 |---|---|---|---|
 | `--addr` | `-a` | `0.0.0.0` | 监听地址 |
-| `--port` | `-p` | `8080` | 监听端口 |
+| `--port` | `-p` | `8080`（探测） | 监听端口。不传时从 8080 起按 +1 递增找可用端口（最多到 8129）——双击启动时 8080 被占也能跑起来；显式传时只试这个端口，被占就 panic（尊重用户明确选择） |
 | `--name` | `-n` | 系统主机名 | 设备名称（手机端显示用） |
 | `--save-dir` | — | `<下载目录>/qrctrl/` | 手机上传文件的保存目录 |
 | `--max-size` | — | `10737418240`（10 GB） | 单文件大小上限（字节） |
@@ -46,9 +46,9 @@ CLI 参数：
 
 **模块职责：**
 
-- **`main.rs`** — 程序入口。用 `clap::Parser`（derive 风格）解析 CLI 参数；`resolve_name()` 决定设备名（`--name` 优先 → 系统主机名 → 兜底 `"qrctrl"`）；计算扫码 URL（多网卡筛选 + `--prefer-ip`）；打印 banner（QR 码 + URL）；启动 server 线程（tokio runtime + axum）；主线程跑 `tray::run_tray_event_loop`（阻塞）。tray 退出 → `Notify::notify_waiters` → server graceful shutdown → `join` server 线程后退出。
+- **`main.rs`** — 程序入口。用 `clap::Parser`（derive 风格）解析 CLI 参数；`resolve_name()` 决定设备名（`--name` 优先 → 系统主机名 → 兜底 `"qrctrl"`）；`resolve_save_dir()` 解析文件保存目录（main 同步 `create_dir_all`，托盘菜单可能早于 server 线程就绪前被点）；`probe_and_bind_port(addr, requested)` 同步绑定端口（见下方「端口策略」）；计算扫码 URL（多网卡筛选 + `--prefer-ip`）；打印 banner（QR 码 + URL）；启动 server 线程（tokio runtime + axum）；主线程跑 `tray::run_tray_event_loop`（阻塞）。tray 退出 → `Notify::notify_waiters` → server graceful shutdown → `join` server 线程后退出。
 
-- **`tray.rs`** — 系统托盘。tao event loop 主线程跑（macOS NSApplication 强制主线程），tray icon + 菜单（复制 URL / 显示二维码 / 退出）。QR 码窗口用 softbuffer 在 tao Window 上直接画像素，避免依赖系统图片查看器。tray-icon 在 `Event::NewEvents(StartCause::Init)` 内创建（避免过早创建 panic）。`Arc<Notify>` 与 server 线程协调退出。
+- **`tray.rs`** — 系统托盘。tao event loop 主线程跑（macOS NSApplication 强制主线程），tray icon + 菜单（复制 URL / 显示二维码 / 打开文件保存目录 / 退出）。QR 码窗口用 softbuffer 在 tao Window 上直接画像素，避免依赖系统图片查看器。tray-icon 在 `Event::NewEvents(StartCause::Init)` 内创建（避免过早创建 panic）。`TrayState.save_dir` 用于「打开文件保存目录」菜单项，点击 spawn 子线程跑 `open_in_file_manager`（macOS: `open` / Windows: `explorer` / Linux: `xdg-open`）。`Arc<Notify>` 与 server 线程协调退出。
 
 - **`token.rs`** — 生成一次性随机 token（字母数字组合），用于扫码 URL 鉴权。
 
@@ -89,11 +89,12 @@ CLI 参数：
 - **Windows subsystem**：release 模式编译为 GUI subsystem（`#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]`），双击 exe 不弹 cmd 黑窗，关任何终端都不杀进程。代价：windows subsystem 下 stdout/stderr 默认无效，所以在 `main()` 第一行调 `attach_parent_console()`——从 PowerShell/cmd 启动时 `AttachConsole(ATTACH_PARENT_PROCESS)` + 重绑 `STD_OUTPUT_HANDLE`/`STD_ERROR_HANDLE` 到 `CONOUT$`，println!/eprintln! 正常输出；双击启动时无父 console，`AttachConsole` 失败，静默跳过。debug 模式保留 console subsystem（`debug_assertions` 为真），开发时 panic backtrace 可见。
 - **macOS .app bundle**：与 Windows GUI subsystem 对应的 macOS 方案。裸 Mach-O 二进制没 bundle 结构，LaunchServices 当成 CLI 工具，Finder 双击会拉起 Terminal.app 来跑，关 Terminal 就杀进程。`scripts/build-macos-app.sh` 把 `target/release/qrctrl` 组装成 `qrctrl.app/Contents/{MacOS/qrctrl,Info.plist,Resources/AppIcon.icns}`，plist 里设 `LSUIElement=true` 把它标成「背景 UI 应用」(agent / accessory)——Finder 双击不弹 Terminal、不进 Dock、不依附任何父进程，托盘图标与按需弹出的 QR 窗口照常工作。版本号在打包时从 `Cargo.toml` 注入 plist 的 `@VERSION@` 占位符。`CFBundleIconFile=AppIcon` 让 bundle 用 `AppIcon.icns`——由脚本用 macOS 自带的 `sips`（把 `assets/icon.png` 切成 16~1024 共 10 个尺寸）+ `iconutil`（打成 .icns）生成，源图改了重跑脚本即可，与 `assets/tray-icon.png` 同一套「`icon.png` 是源真」的约定。`codesign --sign -` 做 ad-hoc 签名（让 macOS 至少认作合法 bundle；正式发布需开发者证书）。`main()` 的 `has_console` 判断兼容这个路径：`.app` 启动时 stdout 不是 TTY，`is_terminal()` 返回 false → `auto_show_qr = true` → 自动弹 QR 窗口，跟 Windows 双击行为一致。release CI 对每个 macOS target 跑这个脚本，产出 `qrctrl-<arch>-macos.app.zip`（用 `ditto -c -k --keepParent` 压缩，保留可执行权限）和原裸二进制两份 asset。
 - **macOS 激活策略**（tray.rs）：光在 plist 设 `LSUIElement=true` 不够——tao 在 `EventLoop` 内部默认 `ActivationPolicy::Regular`，启动时 `launched()` 会调 `NSApp.setActivationPolicy(.regular)` 覆盖 plist 设置，Dock 图标照样冒出来，右键 Dock → Quit 发的 `terminate:` 会杀掉整个托盘进程。修复在 `run_tray_event_loop` 里：构建 `EventLoop` 后立即 `set_activation_policy(Accessory)` + `set_dock_visibility(false)`（这俩改 tao 内部状态，必须在 `run()` 之前调）；`open_qr_window` 里 window `build()` 后再用 `target.set_activation_policy_at_runtime(Accessory)` 强推一次（防御 NSApp 在 window 创建路径里重置策略）。trait 在 `tao::platform::macos`，全部 `#[cfg(target_os = "macos")]` 包，对 Windows/Linux 是 no-op。
+- **端口策略**（main.rs）：`--port` 是 `Option<u16>`（无默认值）。`probe_and_bind_port(addr, requested)` 处理两种语义：`Some(p)` → 只试这个端口，失败 panic（用户显式选择，要尊重）；`None` → 从 8080 起按 +1 递增试 50 个，全失败才 panic。这条主要是为了**双击启动场景**——GUI subsystem / .app bundle 下 stdout 无效，端口冲突时 silent crash 用户根本看不出原因。listener 一路 move 到 `async_main` 用 `tokio::net::TcpListener::from_std` 转换（自动设非阻塞），**不重新 bind**——避免「探测可用、绑定时被抢」的 TOCTOU 竞态。最终端口写入 URL/banner/tray，QR 码自动指向正确端口。
 - **错误处理**：启动期错误（端口绑定失败、enigo/clipboard 初始化失败）用 `expect` 直接 panic；运行时错误（WebSocket 错误、注入失败、剪贴板错误）用 `eprintln!` 记录后继续，不退出服务器。`CbError` 映射为协议错误码字符串（`empty` / `clipboard_busy` / `decode_failed` / `too_large` / `internal`）。
 
 ## 扩展计划
 
-当前已实现：文本注入、双向文本/图片剪贴板同步、JSON 协议（统一，无旧版兼容）、命令行参数与设备名标识、自动发送、Enter/Tab/Backspace/Copy/Paste 快捷键、鼠标移动/点击/拖动（双击后按住拖动）/滚轮、双向任意文件传输、多网卡 IP 候选筛选与 `--prefer-ip` 收窄、`--token` 固定 token 重启保持 URL、系统托盘 + 后台运行（Windows GUI subsystem / macOS `.app` + `LSUIElement`）、双击自动弹 QR。未来计划扩展（详见 `docs/future.md`）：
+当前已实现：文本注入、双向文本/图片剪贴板同步、JSON 协议（统一，无旧版兼容）、命令行参数与设备名标识、自动发送、Enter/Tab/Backspace/Copy/Paste 快捷键、鼠标移动/点击/拖动（双击后按住拖动）/滚轮、双向任意文件传输、多网卡 IP 候选筛选与 `--prefer-ip` 收窄、`--token` 固定 token 重启保持 URL、系统托盘 + 后台运行（Windows GUI subsystem / macOS `.app` + `LSUIElement`）、双击自动弹 QR、端口冲突时自动递增（双击启动不崩溃）、托盘菜单打开文件保存目录。未来计划扩展（详见 `docs/future.md`）：
 
 - 快捷键序列（如 `Cmd+Space`、`Win+R`）
 - 安全考虑：快捷键白名单或二次确认机制

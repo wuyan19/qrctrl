@@ -37,9 +37,11 @@ struct Cli {
     #[arg(short, long, default_value = "0.0.0.0")]
     addr: String,
 
-    /// 监听端口
-    #[arg(short, long, default_value_t = 8080)]
-    port: u16,
+    /// 监听端口。不传时从 8080 起按 +1 递增找一个可用端口（最多到 8129），
+    /// 适配双击启动但 8080 被占用的场景；显式传 `--port` 时只试这个端口，
+    /// 被占用就 panic（尊重用户明确选择）。
+    #[arg(short, long)]
+    port: Option<u16>,
 
     /// 设备名称（用于手机端状态栏显示，区分多台被控设备）
     #[arg(short, long)]
@@ -133,6 +135,45 @@ fn resolve_save_dir(cli_save_dir: Option<PathBuf>) -> PathBuf {
     base.join("qrctrl")
 }
 
+/// 探测并绑定端口。
+/// - `requested = Some(p)`：用户显式指定，只试这个端口，失败就 panic。
+/// - `requested = None`：双击启动场景，从 8080 起按 +1 递增试，最多 50 次。
+///   全失败才 panic。
+///
+/// 返回 (实际绑定的端口, std::net::TcpListener)。listener 在 main 创建后一路 move
+/// 到 async_main 用 `tokio::net::TcpListener::from_std` 转换，**不重新 bind**——
+/// 避免「探测时可用、绑定时被抢」的 TOCTOU 竞态。
+fn probe_and_bind_port(addr: &str, requested: Option<u16>) -> (u16, std::net::TcpListener) {
+    const PROBE_RANGE: u16 = 50;
+    const DEFAULT_PORT: u16 = 8080;
+    let candidates: Vec<u16> = match requested {
+        Some(p) => vec![p],
+        None => (DEFAULT_PORT..DEFAULT_PORT + PROBE_RANGE).collect(),
+    };
+    let mut last_err: Option<std::io::Error> = None;
+    for &p in &candidates {
+        let bind_addr = format!("{}:{}", addr, p);
+        match std::net::TcpListener::bind(&bind_addr) {
+            Ok(listener) => return (p, listener),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    match requested {
+        Some(p) => panic!(
+            "端口 {}:{} 绑定失败（被占用或权限不足）：{}",
+            addr,
+            p,
+            last_err.unwrap()
+        ),
+        None => panic!(
+            "端口范围 {}:{}-{} 全部被占用，请用 --port 指定其他端口",
+            addr,
+            candidates.first().unwrap(),
+            candidates.last().unwrap()
+        ),
+    }
+}
+
 fn main() {
     // has_console = 是否有可用的 stdout。双击启动时为 false（自动弹 GUI 二维码窗口），
     // PowerShell/cmd/terminal 启动时为 true（banner 在终端显示，不需要 GUI 弹窗）。
@@ -151,7 +192,20 @@ fn main() {
         None => token::generate_token(),
     };
     let name = resolve_name(&cli.name);
-    let port = cli.port;
+
+    // save_dir 在 main 同步阶段创建：托盘菜单「打开文件保存目录」可能在 server
+    // 线程完成 async_main 之前就被点，那时必须保证目录已存在。
+    let save_dir = resolve_save_dir(cli.save_dir.clone());
+    std::fs::create_dir_all(&save_dir)
+        .unwrap_or_else(|e| panic!("创建 save_dir 失败 {}: {}", save_dir.display(), e));
+
+    // 端口探测 + 绑定（用户没传 --port 时从 8080 起递增找可用端口）。
+    // listener 一路 move 到 async_main，from_std 转换，不重新 bind。
+    let (port, std_listener) = probe_and_bind_port(&cli.addr, cli.port);
+    if cli.port.is_none() && port != 8080 {
+        // 双击启动时无 console，这行只在 CLI 启动可见；QR 码本身已含正确端口
+        println!("[qrctrl] 默认端口 8080 被占用，已自动改用 {}", port);
+    }
 
     // 收集局域网候选 IP，应用 --prefer-ip 过滤（若提供）
     let all_candidates = net::list_local_ipv4s();
@@ -168,7 +222,7 @@ fn main() {
     };
 
     // banner 先打印（用 & 借，不 move）
-    print_banner(&name, &url, &candidates, &cli);
+    print_banner(&name, &url, &candidates, &cli, port, &save_dir);
 
     // shutdown 通知：tray 退出菜单触发 → server graceful shutdown
     let shutdown_notify = Arc::new(Notify::new());
@@ -177,6 +231,7 @@ fn main() {
     // 主线程必须留给 tao event loop（macOS NSApplication 主线程约束）。
     let server_shutdown = shutdown_notify.clone();
     let server_name = name.clone();
+    let tray_save_dir = save_dir.clone();
     let server_handle = std::thread::Builder::new()
         .name("qrctrl-server".to_string())
         .spawn(move || {
@@ -184,7 +239,14 @@ fn main() {
                 .enable_all()
                 .build()
                 .expect("tokio runtime 初始化失败");
-            rt.block_on(async_main(cli, token, server_name, server_shutdown));
+            rt.block_on(async_main(
+                cli,
+                token,
+                server_name,
+                server_shutdown,
+                save_dir,
+                std_listener,
+            ));
         })
         .expect("server 线程启动失败");
 
@@ -192,6 +254,7 @@ fn main() {
     let tray_state = TrayState {
         device_name: name,
         url,
+        save_dir: tray_save_dir,
         auto_show_qr: !has_console,
     };
     tray::run_tray_event_loop(tray_state, shutdown_notify.clone());
@@ -209,13 +272,12 @@ async fn async_main(
     token: String,
     name: String,
     shutdown_notify: Arc<Notify>,
+    save_dir: PathBuf,
+    listener: std::net::TcpListener,
 ) {
     let enigo = Enigo::new(&Settings::default()).expect("Enigo 初始化失败");
     let cb = clipboard::new_handle().expect("剪贴板初始化失败");
-    let save_dir = resolve_save_dir(cli.save_dir);
-    tokio::fs::create_dir_all(&save_dir)
-        .await
-        .unwrap_or_else(|e| panic!("创建 save_dir 失败 {}: {}", save_dir.display(), e));
+    // save_dir 由 main 同步创建，这里无需重复
 
     let registry = file_transfer::TransferRegistry::default();
     {
@@ -245,10 +307,10 @@ async fn async_main(
         .route("/download/{id}", get(file_transfer::download_handler))
         .with_state(state);
 
-    let bind = format!("{}:{}", cli.addr, cli.port);
-    let listener = tokio::net::TcpListener::bind(&bind)
-        .await
-        .expect("端口绑定失败");
+    // listener 在 main 里通过 probe_and_bind_port 同步绑定，这里转 tokio（自动设非阻塞）。
+    // 不重新 bind 是为了避免「探测可用、绑定时被抢」的 TOCTOU 竞态。
+    let listener = tokio::net::TcpListener::from_std(listener)
+        .expect("std TcpListener 转 tokio 失败");
 
     // graceful shutdown：tray 退出菜单触发 notify，server 收到信号后优雅关闭
     let shutdown_signal = async move {
@@ -261,8 +323,14 @@ async fn async_main(
         .unwrap();
 }
 
-fn print_banner(name: &str, url: &str, candidates: &[Ipv4Addr], cli: &Cli) {
-    let save_dir = resolve_save_dir(cli.save_dir.clone());
+fn print_banner(
+    name: &str,
+    url: &str,
+    candidates: &[Ipv4Addr],
+    cli: &Cli,
+    port: u16,
+    save_dir: &std::path::Path,
+) {
     let token_in_url = url.rsplit_once("t=").map(|(_, t)| t).unwrap_or("");
     println!("============================================");
     println!(" qrctrl 已启动 · 设备名：{}", name);
@@ -281,9 +349,9 @@ fn print_banner(name: &str, url: &str, candidates: &[Ipv4Addr], cli: &Cli) {
         println!("--------------------------------------------");
         println!(" 检测到多个网卡 IP，监听 0.0.0.0 全部可访问：");
         for ip in &candidates[1..] {
-            println!("   http://{}:{}/?t={}", ip, cli.port, token_in_url);
+            println!("   http://{}:{}/?t={}", ip, port, token_in_url);
         }
     }
     println!("============================================");
-    println!("\n监听 {}:{}，托盘图标常驻，菜单选择退出\n", cli.addr, cli.port);
+    println!("\n监听 {}:{}，托盘图标常驻，菜单选择退出\n", cli.addr, port);
 }

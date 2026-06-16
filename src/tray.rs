@@ -13,6 +13,7 @@
 // closure 不返回（tao 的 run 是 `-> !`），所以变量无法被显式 read 或 drop。
 #![allow(unused_assignments, unused_variables)]
 
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -31,6 +32,8 @@ use crate::qr;
 pub struct TrayState {
     pub device_name: String,
     pub url: String,
+    /// 手机上传文件的保存目录，托盘菜单「打开文件保存目录」点开它。
+    pub save_dir: PathBuf,
     /// 双击启动（无 console、无 banner）时为 true，tray 初始化后自动弹 QR 码窗口。
     pub auto_show_qr: bool,
 }
@@ -82,10 +85,12 @@ pub fn run_tray_event_loop(state: TrayState, shutdown_notify: Arc<Notify>) {
     let menu = Menu::new();
     let copy_url_i = MenuItem::new("复制 URL", true, None);
     let show_qr_i = MenuItem::new("显示二维码", true, None);
+    let open_save_dir_i = MenuItem::new("打开文件保存目录", true, None);
     let quit_i = MenuItem::new("退出", true, None);
     let _ = menu.append_items(&[
         &copy_url_i,
         &show_qr_i,
+        &open_save_dir_i,
         &PredefinedMenuItem::separator(),
         &quit_i,
     ]);
@@ -134,6 +139,9 @@ pub fn run_tray_event_loop(state: TrayState, shutdown_notify: Arc<Notify>) {
                             Err(e) => eprintln!("[tray] 显示二维码失败: {}", e),
                         }
                     }
+                } else if e.id == open_save_dir_i.id() {
+                    let save_dir = state.save_dir.clone();
+                    std::thread::spawn(move || open_in_file_manager(&save_dir));
                 } else if e.id == quit_i.id() {
                     shutdown_notify.notify_waiters();
                     *control_flow = ControlFlow::Exit;
@@ -259,4 +267,20 @@ fn load_icon() -> tray_icon::Icon {
     let (w, h) = img.dimensions();
     let rgba = img.into_raw();
     tray_icon::Icon::from_rgba(rgba, w, h).expect("icon from rgba")
+}
+
+/// 在系统文件管理器里打开 path。失败只打日志，不弹错误（tray 应用没 UI 兜底，
+/// 且 save_dir 在 main 里已经同步创建过，失败基本意味着系统层面问题）。
+fn open_in_file_manager(path: &std::path::Path) {
+    // macOS: open、Windows: explorer、Linux: xdg-open —— 都是系统自带或主流发行版标配
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let program = "xdg-open";
+
+    if let Err(e) = std::process::Command::new(program).arg(path).spawn() {
+        eprintln!("[tray] 打开 {} 失败: {}", path.display(), e);
+    }
 }
