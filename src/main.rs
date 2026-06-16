@@ -1,3 +1,7 @@
+// release 模式用 windows GUI subsystem：双击不弹 cmd 黑窗，关终端不影响程序。
+// debug 模式保留 console，方便开发时直接看 println!/panic 信息。
+#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
+
 mod clipboard;
 mod file_transfer;
 mod inject;
@@ -61,6 +65,49 @@ struct Cli {
     prefer_ip: Option<String>,
 }
 
+/// 在 windows_subsystem = "windows" 模式下，stdout/stderr 默认无效。
+/// 如果是从 cmd/PowerShell 启动的（有父 console），attach 上并把 std handle
+/// 重绑过去——这样 banner / --help / --version / panic 都能正常输出。
+/// 双击启动时 AttachConsole 失败（无父 console），静默跳过，程序继续。
+#[cfg(target_os = "windows")]
+fn attach_parent_console() {
+    use std::ptr;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileA, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Console::{
+        AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE,
+        STD_OUTPUT_HANDLE,
+    };
+
+    unsafe {
+        // 已有 stdout（console subsystem 直接启动，或 debug 模式）→ 不需要 attach
+        let existing = GetStdHandle(STD_OUTPUT_HANDLE);
+        if !existing.is_null() && existing != INVALID_HANDLE_VALUE {
+            return;
+        }
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            return; // 双击启动，无父 console
+        }
+        let name = b"CONOUT$\0";
+        let out = CreateFileA(
+            name.as_ptr(),
+            (GENERIC_READ | GENERIC_WRITE) as u32,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ptr::null(),
+            OPEN_EXISTING,
+            0,
+            ptr::null_mut(),
+        );
+        if out.is_null() || out == INVALID_HANDLE_VALUE {
+            return;
+        }
+        SetStdHandle(STD_OUTPUT_HANDLE, out);
+        SetStdHandle(STD_ERROR_HANDLE, out);
+    }
+}
+
 fn resolve_name(cli_name: &Option<String>) -> String {
     if let Some(n) = cli_name {
         if !n.trim().is_empty() {
@@ -83,6 +130,9 @@ fn resolve_save_dir(cli_save_dir: Option<PathBuf>) -> PathBuf {
 }
 
 fn main() {
+    #[cfg(target_os = "windows")]
+    attach_parent_console();
+
     let cli = Cli::parse();
 
     let token = match &cli.token {

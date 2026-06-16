@@ -2351,6 +2351,7 @@ dependencies = [
  "tower-http",
  "tray-icon",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

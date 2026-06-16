@@ -86,6 +86,7 @@ CLI 参数：
 - **断线重连**：前端实现指数退避重连（1s → 2s → 4s → ... 上限 10s），后端无状态。
 - **平台条件编译**：当前代码无 `#[cfg]` 分支，arboard / enigo / hostname 库自己处理平台差异。Linux 上 enigo 需要 `libxtst-dev`、`libx11-dev`、`libxdo-dev`（CI 中已配置）。Linux 上 tray-icon / tao 还需要 `libgtk-3-dev`、`libayatana-appindicator3-dev`（或老版 `libappindicator3-dev`）。
 - **系统托盘**：tray-icon + tao + softbuffer 实现。线程模型：主线程跑 tao event loop（macOS NSApplication 强制），server 的 tokio runtime 跑在子线程；退出通过 `tokio::sync::Notify` 协调，axum `with_graceful_shutdown` 让 server 优雅关闭（避免上传半成品文件残留）。binary 增加 ~400 KB（Windows release）。
+- **Windows subsystem**：release 模式编译为 GUI subsystem（`#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]`），双击 exe 不弹 cmd 黑窗，关任何终端都不杀进程。代价：windows subsystem 下 stdout/stderr 默认无效，所以在 `main()` 第一行调 `attach_parent_console()`——从 PowerShell/cmd 启动时 `AttachConsole(ATTACH_PARENT_PROCESS)` + 重绑 `STD_OUTPUT_HANDLE`/`STD_ERROR_HANDLE` 到 `CONOUT$`，println!/eprintln! 正常输出；双击启动时无父 console，`AttachConsole` 失败，静默跳过。debug 模式保留 console subsystem（`debug_assertions` 为真），开发时 panic backtrace 可见。
 - **错误处理**：启动期错误（端口绑定失败、enigo/clipboard 初始化失败）用 `expect` 直接 panic；运行时错误（WebSocket 错误、注入失败、剪贴板错误）用 `eprintln!` 记录后继续，不退出服务器。`CbError` 映射为协议错误码字符串（`empty` / `clipboard_busy` / `decode_failed` / `too_large` / `internal`）。
 
 ## 扩展计划
