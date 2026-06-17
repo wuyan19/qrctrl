@@ -33,6 +33,11 @@ pub struct Config {
     pub max_size: Option<u64>,
     pub token: Option<String>,
     pub prefer_ip: Option<String>,
+    /// 主题偏好：`"dark"` / `"light"` / `"system"`。None = 跟随系统。
+    /// 前端 index.html 通过 ws server_info 拿到后用 `[data-theme]` 应用。
+    /// 与其他字段不同：theme 走 live-apply（POST /api/theme 立即改 state + 写文件），
+    /// 因为切换主题不该要求用户重启——重启语义是给「真正影响 server 启动」的字段用的。
+    pub theme: Option<String>,
 }
 
 /// 返回配置文件路径。`dirs::config_dir()` 在某些嵌入式环境可能返回 None，做兜底。
@@ -114,22 +119,46 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             return Err(format!("token 不合法：{}", e));
         }
     }
+    if let Some(ref theme) = cfg.theme {
+        let t = theme.trim().to_lowercase();
+        if !matches!(t.as_str(), "dark" | "light" | "system") {
+            return Err("theme 必须是 dark / light / system".into());
+        }
+    }
     Ok(())
+}
+
+/// 校验并归一化 theme 字符串（trim + lowercase + 必须是合法三选一）。
+/// `set_theme_handler` 单独走这条路径，因为它要 live apply + 写文件，
+/// 不能依赖 Config 反序列化（前端可能传非法值）。
+pub fn normalize_theme(raw: &str) -> Result<String, String> {
+    let t = raw.trim().to_lowercase();
+    if matches!(t.as_str(), "dark" | "light" | "system") {
+        Ok(t)
+    } else {
+        Err("theme 必须是 dark / light / system".into())
+    }
 }
 
 // ============================================================================
 // HTTP handlers
 // ============================================================================
 
-/// `GET /config?t=<token>` → 配置页 HTML。token 校验失败返回 401。
+/// `GET /config?t=<token>` → 配置页 HTML，首屏注入当前主题（同 index_handler）。
+/// token 校验失败返回 401。
 pub async fn config_page_handler(
     State(state): State<AppState>,
     Query(q): Query<TokenQuery>,
-) -> Result<Html<&'static str>, axum::http::StatusCode> {
+) -> Result<Html<String>, axum::http::StatusCode> {
     if q.t != state.token {
         return Err(axum::http::StatusCode::UNAUTHORIZED);
     }
-    Ok(Html(CONFIG_HTML))
+    let theme = state.theme.lock().unwrap().clone();
+    let html = CONFIG_HTML.replace(
+        "data-theme=\"__THEME__\"",
+        &format!("data-theme=\"{}\"", theme),
+    );
+    Ok(Html(html))
 }
 
 /// `GET /api/config?t=<token>` → 当前生效配置 JSON。
@@ -148,6 +177,7 @@ pub async fn get_config_handler(
         "max_size": state.max_size,
         "token": state.token,
         "prefer_ip": state.prefer_ip,
+        "theme": *state.theme.lock().unwrap(),
     })))
 }
 
@@ -182,6 +212,51 @@ pub async fn set_config_handler(
             .into_response();
     }
     Json(json!({"ok": true})).into_response()
+}
+
+/// `POST /api/theme?t=<token>` body=`{"theme": "dark"|"light"|"system"}` → live apply + 持久化。
+///
+/// 与其他配置字段不同：theme **走 live-apply**——前端切换按钮点击后立即生效，
+/// 不要求重启。重启只用于「真正影响 server 启动」的字段（端口 / token / save_dir 等）。
+///
+/// 持久化策略：load 当前文件 → 覆盖 theme 字段 → save。这样不会丢失其他字段
+/// （前端切 theme 时不需要把所有字段都 POST 回来）。
+pub async fn set_theme_handler(
+    State(state): State<AppState>,
+    Query(q): Query<TokenQuery>,
+    Json(payload): Json<serde_json::Value>,
+) -> Response {
+    use axum::http::StatusCode;
+    if q.t != state.token {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let raw = payload
+        .get("theme")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let theme = match normalize_theme(raw) {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": e})),
+            )
+                .into_response();
+        }
+    };
+    // live apply：改 state，所有后续 ws server_info 推送都会带新 theme
+    *state.theme.lock().unwrap() = theme.clone();
+    // 持久化：保留文件里其他字段，只覆盖 theme
+    let mut cfg = load();
+    cfg.theme = Some(theme.clone());
+    if let Err(e) = save(&cfg) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": format!("写入失败：{}", e)})),
+        )
+            .into_response();
+    }
+    Json(json!({"ok": true, "theme": theme})).into_response()
 }
 
 #[derive(Deserialize)]

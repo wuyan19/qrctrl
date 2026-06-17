@@ -70,8 +70,9 @@ pub async fn ws_handler(
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
     println!("[ws] 客户端已连接");
-    // 升级后立刻推送设备名，前端用于状态栏显示
-    let info = server_info_json(&state.name);
+    // 升级后立刻推送设备名 + 主题偏好，前端用于状态栏显示和主题应用
+    let theme = state.theme.lock().unwrap().clone();
+    let info = server_info_json(&state.name, &theme);
     if socket.send(Message::Text(info.into())).await.is_err() {
         println!("[ws] 发送 server_info 失败，断开");
         return;
@@ -414,12 +415,16 @@ fn file_list_json(files: Vec<serde_json::Value>) -> String {
     serde_json::json!({"type": "file_list", "files": files}).to_string()
 }
 
-fn server_info_json(name: &str) -> String {
+fn server_info_json(name: &str, theme: &str) -> String {
     // version 用 env! 编译期内联 Cargo.toml 的 package.version，前端拿来做「当前版本」展示。
+    // theme 是当前生效的主题偏好（"dark"/"light"/"system"），前端据此应用 [data-theme]。
+    // 即便前端在 ws 连接前已经根据 prefers-color-scheme 渲染过一次，server_info 推过来后
+    // 还会覆盖一次——保证用户在 qrctrl 内的显式选择生效。
     serde_json::json!({
         "type": "server_info",
         "name": name,
         "version": env!("CARGO_PKG_VERSION"),
+        "theme": theme,
     })
     .to_string()
 }

@@ -1,148 +1,468 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="__THEME__">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>qrctrl 配置</title>
+<meta name="theme-color" content="#14110B">
+<title>qrctrl · CONFIG</title>
+<script>
+// 首屏主题解析（与 index.html 同思路）：服务端注入 __THEME__，"system" 在前端 resolve，
+// 避免闪烁。后续 loadConfig 拿到 theme 时会再应用一次（实际值一致，幂等）。
+(function () {
+  try {
+    var t = document.documentElement.getAttribute('data-theme') || 'system';
+    if (t === 'system' || !t) {
+      t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    }
+    document.documentElement.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
 <style>
+  /* ============================================================
+     qrctrl — Phosphor Terminal theme · Configuration console
+     与 index.html 共用视觉语言：暗色控制台 / 等宽 UI / 琥珀强调
+     ============================================================ */
+  :root {
+    --bg: #14110B;
+    --bg-elev: #1C1812;
+    --panel: #221E16;
+    --panel-hi: #2A251C;
+    --ink: #F4ECD8;
+    --ink-dim: #A89E84;
+    --ink-faint: #5F5847;
+    --amber: #FFB347;
+    --amber-hi: #FFC76A;
+    --amber-soft: rgba(255, 179, 71, 0.16);
+    --amber-glow: rgba(255, 179, 71, 0.45);
+    --cyan: #5BD1E0;
+    --red: #FF6B5A;
+    --red-soft: rgba(255, 107, 90, 0.12);
+    --green: #6BCB77;
+    --border: rgba(244, 236, 216, 0.12);
+    --border-hi: rgba(244, 236, 216, 0.22);
+    --border-amber: rgba(255, 179, 71, 0.45);
+
+    --font-mono: 'SF Mono', 'JetBrains Mono', 'Cascadia Mono', 'Consolas', 'Menlo', 'Source Code Pro', 'Courier New', monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  }
+
+  /* ============================================================
+     亮色主题：暖纸 + 深琥珀
+     只覆盖变量，所有组件自动跟随。
+     ============================================================ */
+  :root[data-theme="light"] {
+    --bg: #F5F1E8;
+    --bg-elev: #EDE5D2;
+    --panel: #FFFFFF;
+    --panel-hi: #F0EAD8;
+    --ink: #2A1F0E;
+    --ink-dim: #6B5C45;
+    --ink-faint: #A89E84;
+    --amber: #B45E0A;
+    --amber-hi: #C97A1C;
+    --amber-soft: rgba(180, 94, 10, 0.10);
+    --amber-glow: rgba(180, 94, 10, 0.30);
+    --cyan: #2B7A8C;
+    --red: #C73E2F;
+    --red-soft: rgba(199, 62, 47, 0.10);
+    --green: #4A8E4F;
+    --border: rgba(42, 31, 14, 0.15);
+    --border-hi: rgba(42, 31, 14, 0.30);
+    --border-amber: rgba(180, 94, 10, 0.50);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; }
+  /* 注意：不要给 body 设 height: 100%，否则在 box-sizing: border-box 下，
+     当内容撑满视口后 padding-bottom 会被挤出 body 边界之外，看起来底部没间距。
+     用 min-height: 100vh（见下方 body 规则）就够了。 */
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #f5f5f7;
-    color: #1d1d1f;
-    padding: 16px;
-    max-width: 640px;
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--ink);
+    /* 底部留白：PC 端 36px，iPhone 上叠加 safe-area-inset-bottom
+       避免按钮被 home indicator 横条遮挡。 */
+    padding: 32px 20px calc(36px + env(safe-area-inset-bottom, 0px));
+    min-height: 100vh;
+    background-image:
+      radial-gradient(circle at 50% -10%, rgba(255, 179, 71, 0.06) 0%, transparent 50%);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 720px;
     margin: 0 auto;
   }
-  h1 { font-size: 22px; margin-bottom: 4px; }
-  .sub { color: #6e6e73; font-size: 13px; margin-bottom: 18px; }
-  .card {
-    background: #fff;
-    border-radius: 12px;
-    padding: 16px;
-    margin-bottom: 14px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+
+  /* ====== Header / brand ====== */
+  .masthead {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background:
+      linear-gradient(180deg, var(--amber-soft), transparent 60%),
+      var(--panel);
+    padding: 18px 22px;
+    margin-bottom: 24px;
+    position: relative;
+    overflow: hidden;
   }
-  .field { margin-bottom: 14px; }
-  .field:last-child { margin-bottom: 0; }
-  label {
-    display: block;
-    font-size: 13px;
-    font-weight: 600;
-    color: #1d1d1f;
+  .masthead::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--amber);
+    opacity: 0.6;
+  }
+  .masthead .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.32em;
+    color: var(--amber);
+    text-transform: uppercase;
     margin-bottom: 6px;
   }
-  .hint { font-size: 12px; color: #6e6e73; margin-top: 4px; font-weight: 400; }
+  .masthead h1 {
+    font-family: var(--font-mono);
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--ink);
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .masthead h1 .sep {
+    color: var(--ink-faint);
+    font-weight: 400;
+  }
+  .masthead h1 .module {
+    color: var(--amber);
+  }
+  .masthead .sub {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+    margin-top: 8px;
+    letter-spacing: 0.04em;
+  }
+
+  /* ====== Banner ====== */
+  .banner {
+    padding: 12px 14px;
+    border: 1px solid var(--border-amber);
+    background: linear-gradient(180deg, var(--amber-soft), transparent);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.65;
+    letter-spacing: 0.02em;
+    border-radius: 6px;
+    margin-bottom: 18px;
+    display: none;
+    position: relative;
+  }
+  .banner::before {
+    content: '! NOTE';
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    color: var(--amber);
+    margin-bottom: 6px;
+    font-weight: 700;
+  }
+  .banner.show { display: block; }
+  .banner a { color: var(--amber); word-break: break-all; }
+  .banner .url {
+    display: block;
+    margin-top: 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+  }
+
+  /* ====== Section ====== */
+  .section {
+    margin-bottom: 24px;
+  }
+  .section-title {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--amber);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-weight: 700;
+  }
+  .section-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+  .section-body {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    overflow: hidden;
+  }
+
+  /* ====== Field 行：左 label 右 input ====== */
+  .field {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 16px;
+    align-items: start;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .field:last-child { border-bottom: none; }
+  .field label {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--ink-dim);
+    letter-spacing: 0.02em;
+    padding-top: 11px;
+    text-transform: lowercase;
+  }
+  .field label::before {
+    content: '·';
+    color: var(--amber);
+    margin-right: 6px;
+    font-weight: 700;
+  }
+  .hint {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-faint);
+    margin-top: 6px;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+    grid-column: 2;
+  }
+
+  /* 输入框：暗底 + 边框 */
   input[type=text], input[type=number], input[type=password], select {
     width: 100%;
     padding: 10px 12px;
-    border: 1px solid #d2d2d7;
-    border-radius: 8px;
-    font-size: 14px;
-    background: #fff;
-    color: #1d1d1f;
-    font-family: inherit;
-  }
-  input:focus, select:focus { outline: none; border-color: #0071e3; }
-  input.invalid { border-color: #d33; }
-  .row { display: flex; gap: 8px; align-items: stretch; }
-  .row > input { flex: 1; }
-  .row > .btn-small { flex: 0 0 auto; }
-  .btn-small {
-    padding: 10px 14px;
-    border: 1px solid #d2d2d7;
-    background: #fff;
-    color: #0071e3;
-    font-weight: 600;
+    border: 1px solid var(--border);
+    border-radius: 4px;
     font-size: 13px;
-    border-radius: 8px;
+    background: var(--bg-elev);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  input::placeholder { color: var(--ink-faint); }
+  input:focus, select:focus {
+    border-color: var(--border-amber);
+    box-shadow: 0 0 0 1px var(--border-amber);
+  }
+  input.invalid {
+    border-color: var(--red);
+    box-shadow: 0 0 0 1px var(--red);
+  }
+  select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--ink-dim) 50%),
+                      linear-gradient(135deg, var(--ink-dim) 50%, transparent 50%);
+    background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: 30px;
     cursor: pointer;
   }
-  .btn-small:active { background: #f0f0f5; }
-  .btn-small:disabled { background: #f0f0f5; color: #aaa; cursor: not-allowed; border-color: #e5e5ea; }
-  .inline-unit {
-    display: flex; gap: 8px;
+  select:focus {
+    background-image: linear-gradient(45deg, transparent 50%, var(--amber) 50%),
+                      linear-gradient(135deg, var(--amber) 50%, transparent 50%);
   }
-  .inline-unit input { flex: 1; }
-  .inline-unit select { flex: 0 0 auto; width: auto; }
+  option {
+    background: var(--panel);
+    color: var(--ink);
+  }
+
+  /* 字段内的子布局 */
+  .row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+  }
+  .row > input { flex: 1; min-width: 0; }
+  .row > .btn-small { flex: 0 0 auto; }
+
+  .inline-unit {
+    display: flex;
+    gap: 8px;
+  }
+  .inline-unit input { flex: 1; min-width: 0; }
+  .inline-unit select { flex: 0 0 auto; width: auto; min-width: 80px; }
+
+  .btn-small {
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    background: var(--bg-elev);
+    color: var(--amber);
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .btn-small:hover {
+    border-color: var(--border-amber);
+    background: var(--panel-hi);
+  }
+  .btn-small:active { background: var(--panel-hi); }
+  .btn-small:disabled {
+    background: var(--bg-elev);
+    color: var(--ink-faint);
+    cursor: not-allowed;
+    border-color: var(--border);
+  }
+
+  /* token 行的密码显隐按钮 */
   .token-row { position: relative; }
   .token-row .toggle {
     position: absolute;
     right: 8px; top: 50%;
     transform: translateY(-50%);
-    background: none; border: none; cursor: pointer;
-    font-size: 16px; color: #6e6e73;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    color: var(--ink-dim);
     padding: 4px 8px;
+    -webkit-tap-highlight-color: transparent;
   }
+  .token-row .toggle:hover { color: var(--amber); }
+  .token-row input { padding-right: 40px !important; }
+
+  /* warning 提示 */
   .warning {
-    background: #fff4e0;
-    border: 1px solid #f0c060;
-    color: #8a5a00;
-    padding: 10px 12px;
-    border-radius: 8px;
-    font-size: 13px;
-    margin-top: 4px;
+    background: var(--red-soft);
+    border: 1px solid rgba(255, 107, 90, 0.3);
+    color: var(--red);
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    margin-top: 6px;
+    letter-spacing: 0.02em;
+    /* .field 是 140px 1fr 两列网格，warning 必须显式落到第 2 列（input 那列），
+       否则会被自动放进第 1 列（label 列），宽度只占 140px。 */
+    grid-column: 2;
   }
-  .actions { display: flex; gap: 10px; margin-top: 4px; }
+  .warning::before {
+    content: '⚠ ';
+    font-weight: 700;
+  }
+
+  /* ====== 底部 actions ====== */
+  .actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
   .btn-primary {
     flex: 1;
-    padding: 14px;
-    background: #0071e3;
-    color: #fff;
-    border: none;
-    border-radius: 10px;
-    font-size: 15px;
-    font-weight: 600;
+    min-width: 140px;
+    padding: 14px 24px;
+    background: var(--amber);
+    color: var(--bg);
+    border: 1px solid var(--amber);
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
     cursor: pointer;
+    transition: background 0.12s, box-shadow 0.12s;
   }
-  .btn-primary:active { background: #005bb5; }
-  .btn-primary:disabled { background: #aaa; cursor: not-allowed; }
+  .btn-primary:hover {
+    background: var(--amber-hi);
+    box-shadow: 0 0 24px -4px var(--amber-glow);
+  }
+  .btn-primary:active { background: var(--amber-hi); }
+  .btn-primary:disabled {
+    background: var(--panel);
+    color: var(--ink-faint);
+    border-color: var(--border);
+    cursor: not-allowed;
+    box-shadow: none;
+  }
   .btn-secondary {
     flex: 0 0 auto;
-    padding: 14px 18px;
-    background: #fff;
-    color: #1d1d1f;
-    border: 1px solid #d2d2d7;
-    border-radius: 10px;
-    font-size: 15px;
+    padding: 14px 20px;
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 13px;
     font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     text-decoration: none;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    text-align: center;
+    transition: border-color 0.12s, color 0.12s;
+  }
+  .btn-secondary:hover {
+    color: var(--amber);
+    border-color: var(--border-amber);
   }
   .btn-warning {
     flex: 0 0 auto;
-    padding: 14px 18px;
-    background: #fff;
-    color: #b25000;
-    border: 1px solid #f0a050;
-    border-radius: 10px;
-    font-size: 15px;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .btn-warning:hover { background: #fff4eb; }
-  .btn-warning:disabled { color: #aaa; border-color: #ddd; background: #fafafa; cursor: not-allowed; }
-  .banner {
-    padding: 12px 14px;
-    border-radius: 10px;
-    background: #fff8d6;
-    border: 1px solid #f0c060;
-    color: #6a4a00;
+    padding: 14px 20px;
+    background: transparent;
+    color: var(--red);
+    border: 1px solid rgba(255, 107, 90, 0.4);
+    border-radius: 6px;
+    font-family: var(--font-mono);
     font-size: 13px;
-    margin-bottom: 14px;
-    display: none;
-    line-height: 1.6;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
   }
-  .banner.show { display: block; }
-  .banner a { color: #0071e3; word-break: break-all; }
-  .banner .url { display: block; margin-top: 6px; font-family: ui-monospace, monospace; font-size: 12px; }
+  .btn-warning:hover {
+    background: var(--red-soft);
+    border-color: var(--red);
+  }
+  .btn-warning:disabled {
+    color: var(--ink-faint);
+    border-color: var(--border);
+    background: transparent;
+    cursor: not-allowed;
+  }
 
-  /* 目录选择模态 */
+  /* ====== 目录选择模态 ====== */
   .modal-bg {
     position: fixed; inset: 0;
-    background: rgba(0,0,0,0.4);
+    background: rgba(20, 17, 11, 0.88);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
     display: none;
     z-index: 100;
     align-items: center;
@@ -150,162 +470,260 @@
   }
   .modal-bg.show { display: flex; }
   .modal {
-    background: #fff;
-    border-radius: 12px;
-    width: 90%; max-width: 540px;
+    background: var(--panel);
+    border: 1px solid var(--border-amber);
+    border-radius: 8px;
+    width: 90%; max-width: 580px;
     max-height: 80vh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    box-shadow: 0 12px 60px rgba(0,0,0,0.5), 0 0 40px -10px var(--amber-glow);
   }
   .modal-header {
-    padding: 10px 16px;
-    border-bottom: 1px solid #e5e5ea;
-    font-size: 14px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, var(--amber-soft), transparent);
     overflow-x: auto;
-    overflow-y: hidden; /* 面包屑单行；overflow-x: auto 会把 visible 强制成 auto，需显式 hidden 避免误出纵向滚动条 */
+    overflow-y: hidden;
     white-space: nowrap;
     display: flex;
     align-items: center;
-    min-height: 28px;
+    min-height: 32px;
   }
   #modal-breadcrumb { display: inline-flex; gap: 2px; align-items: center; }
   #modal-breadcrumb a {
-    color: #0071e3; cursor: pointer; text-decoration: none;
-    font-size: 13px;
+    color: var(--ink-dim);
+    cursor: pointer;
+    text-decoration: none;
+    font-family: var(--font-mono);
+    font-size: 12px;
     padding: 4px 8px;
-    border-radius: 6px;
-    transition: background 0.12s;
+    border-radius: 4px;
+    transition: background 0.12s, color 0.12s;
     user-select: none;
   }
-  #modal-breadcrumb a:hover { background: #e8f1ff; }
-  #modal-breadcrumb a:active { background: #d4e4ff; }
-  /* 「此电脑」根入口：稍微突出，跟普通路径段区分 */
-  #modal-breadcrumb a.root-link {
-    font-weight: 600;
+  #modal-breadcrumb a:hover {
+    background: var(--bg-elev);
+    color: var(--amber);
   }
-  #modal-breadcrumb .sep { color: #aaa; font-size: 12px; padding: 0 2px; }
+  #modal-breadcrumb a:active {
+    background: var(--panel-hi);
+  }
+  /* 「此电脑」根入口 */
+  #modal-breadcrumb a.root-link {
+    font-weight: 700;
+    color: var(--amber);
+  }
+  #modal-breadcrumb .sep {
+    color: var(--ink-faint);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 0 2px;
+  }
   .modal-body {
     flex: 1; overflow-y: auto;
     padding: 4px 0;
   }
   .dir-entry {
     padding: 12px 16px;
-    font-size: 14px;
+    font-family: var(--font-mono);
+    font-size: 13px;
     cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 8px;
-    border-bottom: 1px solid #f0f0f5;
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--ink);
+    transition: background 0.1s, color 0.1s;
   }
-  .dir-entry:hover { background: #f0f0f5; }
-  .dir-entry .icon { color: #6e6e73; }
-  .dir-entry.empty { color: #999; cursor: default; }
-  .dir-entry.empty:hover { background: transparent; }
+  .dir-entry:hover {
+    background: var(--bg-elev);
+    color: var(--amber);
+  }
+  .dir-entry .icon { color: var(--ink-dim); font-size: 14px; }
+  .dir-entry:hover .icon { color: var(--amber); }
+  .dir-entry.empty {
+    color: var(--ink-faint);
+    cursor: default;
+  }
+  .dir-entry.empty:hover {
+    background: transparent;
+    color: var(--ink-faint);
+  }
+  .dir-entry.empty:hover .icon { color: var(--ink-faint); }
   .modal-footer {
     padding: 12px 16px;
-    border-top: 1px solid #e5e5ea;
+    border-top: 1px solid var(--border);
     display: flex;
     gap: 10px;
     justify-content: space-between;
     align-items: center;
+    background: var(--bg-elev);
   }
   .modal-current {
-    font-size: 12px; color: #6e6e73;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-dim);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    letter-spacing: 0.02em;
   }
   .modal-actions { display: flex; gap: 8px; }
+  #modal-select {
+    background: var(--amber);
+    color: var(--bg);
+    border-color: var(--amber);
+    font-weight: 700;
+  }
+  #modal-select:hover {
+    background: var(--amber-hi);
+    color: var(--bg);
+    border-color: var(--amber-hi);
+  }
+
+  /* ====== Toast ====== */
   .toast {
     position: fixed;
     bottom: 24px;
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(0,0,0,0.85);
-    color: #fff;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--border-amber);
     padding: 10px 18px;
-    border-radius: 22px;
-    font-size: 13px;
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.02em;
     z-index: 200;
     opacity: 0;
-    transition: opacity 0.2s;
     pointer-events: none;
+    transition: opacity 0.2s;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4), 0 0 24px -8px var(--amber-glow);
   }
   .toast.show { opacity: 1; }
+
+  /* ====== 窄屏响应 ====== */
+  @media (max-width: 600px) {
+    body { padding: 16px 12px calc(28px + env(safe-area-inset-bottom, 0px)); }
+    .field {
+      grid-template-columns: 1fr;
+      gap: 6px;
+      padding: 12px 14px;
+    }
+    .field label { padding-top: 0; }
+    .hint, .warning { grid-column: 1; }
+    .masthead h1 { font-size: 18px; }
+    .actions { flex-direction: column; }
+    .btn-primary, .btn-secondary, .btn-warning {
+      flex: 1;
+      width: 100%;
+    }
+  }
 </style>
 </head>
 <body>
-<h1>qrctrl 配置</h1>
-<div class="sub">修改后保存并重启 qrctrl 让配置生效。</div>
+<div class="wrap">
+
+<div class="masthead">
+  <div class="eyebrow">QR · CONTROL</div>
+  <h1>qrctrl <span class="sep">//</span> <span class="module">configuration</span></h1>
+  <div class="sub">修改后保存并重启 qrctrl 让配置生效。</div>
+</div>
 
 <div id="banner" class="banner"></div>
 
-<div class="card">
-  <div class="field">
-    <label for="f-name">设备名</label>
-    <input type="text" id="f-name" placeholder="系统主机名">
-    <div class="hint">手机端状态栏显示用，区分多台被控设备。</div>
-  </div>
-
-  <div class="field">
-    <label for="f-addr">监听地址</label>
-    <input type="text" id="f-addr" placeholder="0.0.0.0">
-    <div class="hint">默认 0.0.0.0 = 监听所有网络接口。</div>
-  </div>
-
-  <div class="field">
-    <label for="f-port">监听端口</label>
-    <input type="number" id="f-port" placeholder="8080（留空自动探测）" min="1" max="65535">
-    <div class="hint" id="port-hint">留空 = 从 8080 起自动找一个可用端口。</div>
-  </div>
-
-  <div class="field">
-    <label for="f-save-dir">文件保存目录</label>
-    <div class="row">
-      <input type="text" id="f-save-dir" placeholder="<下载目录>/qrctrl/">
-      <button type="button" class="btn-small" id="browse-btn">浏览...</button>
+<!-- ============ 设备 ============ -->
+<div class="section">
+  <div class="section-title">Device</div>
+  <div class="section-body">
+    <div class="field">
+      <label for="f-name">name</label>
+      <input type="text" id="f-name" placeholder="系统主机名">
+      <div class="hint">手机端状态栏显示用，区分多台被控设备。</div>
     </div>
-    <div class="hint">手机上传的文件落到这里。</div>
   </div>
+</div>
 
-  <div class="field">
-    <label for="f-max-size">单文件大小上限</label>
-    <div class="inline-unit">
-      <input type="number" id="f-max-size" min="1">
-      <select id="f-max-unit">
-        <option value="KB">KB</option>
-        <option value="MB">MB</option>
-        <option value="GB" selected>GB</option>
+<!-- ============ 网络 ============ -->
+<div class="section">
+  <div class="section-title">Network</div>
+  <div class="section-body">
+    <div class="field">
+      <label for="f-addr">addr</label>
+      <input type="text" id="f-addr" placeholder="0.0.0.0">
+      <div class="hint">默认 0.0.0.0 = 监听所有网络接口。</div>
+    </div>
+
+    <div class="field">
+      <label for="f-port">port</label>
+      <input type="number" id="f-port" placeholder="8080（留空自动探测）" min="1" max="65535">
+      <div class="hint" id="port-hint">留空 = 从 8080 起自动找一个可用端口。</div>
+    </div>
+
+    <div class="field">
+      <label for="f-prefer-ip">prefer_ip</label>
+      <select id="f-prefer-ip">
+        <option value="">无偏好</option>
       </select>
+      <div class="hint">多网卡时挑哪个子网的 IP 进 QR 码。</div>
     </div>
-    <div class="hint">手机上传单文件超出会被拒绝。上限 1 TB。</div>
   </div>
+</div>
 
-  <div class="field">
-    <label for="f-prefer-ip">偏好 IP 子网</label>
-    <select id="f-prefer-ip">
-      <option value="">无偏好</option>
-    </select>
-    <div class="hint">多网卡时挑哪个子网的 IP 进 QR 码。</div>
-  </div>
-
-  <div class="field">
-    <label for="f-token">Token</label>
-    <div class="token-row">
-      <input type="text" id="f-token" autocomplete="off" autocorrect="off" spellcheck="false" style="padding-right: 40px;">
-      <button type="button" class="toggle" id="token-toggle">👁</button>
+<!-- ============ 存储 ============ -->
+<div class="section">
+  <div class="section-title">Storage</div>
+  <div class="section-body">
+    <div class="field">
+      <label for="f-save-dir">save_dir</label>
+      <div class="row">
+        <input type="text" id="f-save-dir" placeholder="<下载目录>/qrctrl/">
+        <button type="button" class="btn-small" id="browse-btn">浏览</button>
+      </div>
+      <div class="hint">手机上传的文件落到这里。</div>
     </div>
-    <div class="warning">修改 token 后需重启 qrctrl 才生效。重启前旧 token 仍可扫码连接。</div>
+
+    <div class="field">
+      <label for="f-max-size">max_size</label>
+      <div class="inline-unit">
+        <input type="number" id="f-max-size" min="1">
+        <select id="f-max-unit">
+          <option value="KB">KB</option>
+          <option value="MB">MB</option>
+          <option value="GB" selected>GB</option>
+        </select>
+      </div>
+      <div class="hint">手机上传单文件超出会被拒绝。上限 1 TB。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 安全 ============ -->
+<div class="section">
+  <div class="section-title">Security</div>
+  <div class="section-body">
+    <div class="field">
+      <label for="f-token">token</label>
+      <div class="token-row">
+        <input type="text" id="f-token" autocomplete="off" autocorrect="off" spellcheck="false">
+        <button type="button" class="toggle" id="token-toggle" aria-label="显隐 token">👁</button>
+      </div>
+      <div class="warning">修改 token 后需重启 qrctrl 才生效。重启前旧 token 仍可扫码连接。</div>
+    </div>
   </div>
 </div>
 
 <div class="actions">
   <button type="button" class="btn-primary" id="save-btn">保存</button>
-  <a class="btn-secondary" id="back-link">返回控制台</a>
+  <a class="btn-secondary" id="back-link">← 返回控制台</a>
   <button type="button" class="btn-warning" id="restart-btn">重启 qrctrl</button>
 </div>
+
+</div><!-- /.wrap -->
 
 <!-- 目录选择模态 -->
 <div class="modal-bg" id="dir-modal">
@@ -316,7 +734,7 @@
       <div class="modal-current" id="modal-current"></div>
       <div class="modal-actions">
         <button type="button" class="btn-small" id="modal-cancel">取消</button>
-        <button type="button" class="btn-small" id="modal-select" style="background:#0071e3;color:#fff;border-color:#0071e3;">选择此目录</button>
+        <button type="button" class="btn-small" id="modal-select">选择此目录</button>
       </div>
     </div>
   </div>
@@ -328,6 +746,8 @@
 const initialToken = new URLSearchParams(location.search).get('t') || '';
 let currentToken = initialToken;
 let modalCurrentPath = null;
+// 当前主题偏好（"dark"/"light"/"system"），用于系统主题变化时判断是否需要跟随。
+let currentThemePref = document.documentElement.getAttribute('data-theme') || 'system';
 
 function showToast(msg, ms = 1800) {
   const el = document.getElementById('toast');
@@ -398,9 +818,31 @@ async function loadConfig() {
     if (!pref || [...prefSel.options].some(o => o.value === pref)) {
       prefSel.value = pref;
     }
+    // 应用主题：cfg.theme 可能是 "dark"/"light"/"system"（或缺失 → system 跟随系统）。
+    // 与首屏 inline script 一致——这里再次应用是冗余但幂等的，主要给后端被改后的情况兜底。
+    applyTheme(cfg.theme || 'system');
   } catch (e) {
     console.error(e);
   }
+}
+
+// 主题应用：system 用 prefers-color-scheme 解析，其他直接用。
+function applyTheme(theme) {
+  currentThemePref = theme || 'system';
+  let resolved = theme;
+  if (theme === 'system' || !theme) {
+    resolved = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  document.documentElement.setAttribute('data-theme', resolved);
+}
+
+// 系统主题变化时，仅当用户偏好为 system 时跟随。否则保持用户显式选择。
+if (window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+    if (currentThemePref === 'system') {
+      applyTheme('system');
+    }
+  });
 }
 
 async function loadLocalIps(selectedPref) {
@@ -444,16 +886,16 @@ async function checkPort() {
     if (data.free) {
       portEl.classList.remove('invalid');
       if (data.self) {
-        hintEl.textContent = '当前 qrctrl 正在使用此端口';
-        hintEl.style.color = '#6e6e73';
+        hintEl.textContent = '· 当前 qrctrl 正在使用此端口';
+        hintEl.style.color = 'var(--cyan)';
       } else {
-        hintEl.textContent = '可用 ✓';
-        hintEl.style.color = '#2cb24a';
+        hintEl.textContent = '✓ 可用';
+        hintEl.style.color = 'var(--amber)';
       }
     } else {
       portEl.classList.add('invalid');
-      hintEl.textContent = '该端口已被占用或权限不足';
-      hintEl.style.color = '#d33';
+      hintEl.textContent = '✗ 该端口已被占用或权限不足';
+      hintEl.style.color = 'var(--red)';
     }
   } catch (e) { /* 忽略 */ }
 }
@@ -489,7 +931,7 @@ async function navigateDir(path) {
     const pushSep = () => {
       const s = document.createElement('span');
       s.className = 'sep';
-      s.textContent = ' › ';
+      s.textContent = '›';
       bcEl.appendChild(s);
     };
 
@@ -549,7 +991,7 @@ async function navigateDir(path) {
     if (data.parent) {
       const el = document.createElement('div');
       el.className = 'dir-entry';
-      el.innerHTML = '<span class="icon">📂</span> ..';
+      el.innerHTML = '<span class="icon">↑</span> ..';
       el.onclick = () => navigateDir(data.parent);
       bodyEl.appendChild(el);
     }

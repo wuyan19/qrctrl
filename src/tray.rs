@@ -113,7 +113,7 @@ pub fn run_tray_event_loop(
                 tray_icon = Some(
                     TrayIconBuilder::new()
                         .with_menu(Box::new(menu.clone()))
-                        .with_tooltip(format!("qrctrl · {}", state.device_name))
+                        .with_tooltip(format!("QR Control · {}", state.device_name))
                         .with_icon(icon)
                         .build()
                         .expect("tray icon build"),
@@ -223,7 +223,7 @@ fn open_qr_window(
 
     let window = Rc::new(
         WindowBuilder::new()
-            .with_title("扫描连接 qrctrl")
+            .with_title("QR Control")
             .with_inner_size(PhysicalSize::new(pixel_w, pixel_h))
             .with_resizable(false)
             .with_window_icon(load_window_icon())

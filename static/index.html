@@ -1,284 +1,494 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="__THEME__">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#14110B">
 <title>qrctrl</title>
+<script>
+// 首屏主题解析：服务端注入 __THEME__（"dark"/"light"/"system"），
+// 这里同步把 "system" 解析成实际的 dark/light 应用到 <html> 上，
+// 避免 CSS 应用后再切换造成闪烁。后续 ws server_info 推送会覆盖一次。
+(function () {
+  try {
+    var t = document.documentElement.getAttribute('data-theme') || 'system';
+    if (t === 'system' || !t) {
+      t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    }
+    document.documentElement.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
 <style>
+  /* ============================================================
+     qrctrl — Phosphor Terminal theme
+     一套暗色控制台视觉语言：等宽字体 + 磷光琥珀强调 + 单色边框
+     ============================================================ */
+  :root {
+    --bg: #14110B;
+    --bg-elev: #1C1812;
+    --panel: #221E16;
+    --panel-hi: #2A251C;
+    --ink: #F4ECD8;
+    --ink-dim: #A89E84;
+    --ink-faint: #5F5847;
+    --amber: #FFB347;
+    --amber-hi: #FFC76A;
+    --amber-soft: rgba(255, 179, 71, 0.16);
+    --amber-glow: rgba(255, 179, 71, 0.45);
+    --cyan: #5BD1E0;
+    --red: #FF6B5A;
+    --green: #6BCB77;
+    --border: rgba(244, 236, 216, 0.12);
+    --border-hi: rgba(244, 236, 216, 0.22);
+    --border-amber: rgba(255, 179, 71, 0.45);
+
+    --font-mono: 'SF Mono', 'JetBrains Mono', 'Cascadia Mono', 'Consolas', 'Menlo', 'Source Code Pro', 'Courier New', monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+
+    --pulse: 2.4s ease-in-out infinite;
+  }
+
+  /* ============================================================
+     亮色主题：暖纸 + 深琥珀
+     只覆盖变量，所有组件自动跟随。模态遮罩保留半透明黑（聚焦时压暗背景）
+     ============================================================ */
+  :root[data-theme="light"] {
+    --bg: #F5F1E8;
+    --bg-elev: #EDE5D2;
+    --panel: #FFFFFF;
+    --panel-hi: #F0EAD8;
+    --ink: #2A1F0E;
+    --ink-dim: #6B5C45;
+    --ink-faint: #A89E84;
+    --amber: #B45E0A;
+    --amber-hi: #C97A1C;
+    --amber-soft: rgba(180, 94, 10, 0.10);
+    --amber-glow: rgba(180, 94, 10, 0.30);
+    --cyan: #2B7A8C;
+    --red: #C73E2F;
+    --red-soft: rgba(199, 62, 47, 0.10);
+    --green: #4A8E4F;
+    --border: rgba(42, 31, 14, 0.15);
+    --border-hi: rgba(42, 31, 14, 0.30);
+    --border-amber: rgba(180, 94, 10, 0.50);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #f5f5f7;
-    color: #1d1d1f;
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--ink);
     display: flex;
     flex-direction: column;
-    padding: 16px;
+    padding: 14px;
     min-height: 100vh;
+    /* 微妙的氛围渐变，避免大面积纯黑死板 */
+    background-image:
+      radial-gradient(circle at 50% 0%, rgba(255, 179, 71, 0.05) 0%, transparent 60%);
+    -webkit-font-smoothing: antialiased;
   }
-  .status {
-    padding: 10px 14px;
-    border-radius: 10px;
-    background: #fff;
-    margin-bottom: 14px;
-    font-size: 14px;
-    font-weight: 500;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .status .dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: #999; flex-shrink: 0;
-  }
-  .status.connected { background: #e6f9e6; }
-  .status.connected .dot { background: #2cb24a; }
-  .status.disconnected { background: #fde8e8; }
-  .status.disconnected .dot { background: #d33; }
+
+  /* ====== 顶部状态条 ====== */
   .top-row {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     margin-bottom: 14px;
     align-items: stretch;
   }
-  .top-row .status {
+  .status {
     flex: 1;
-    margin-bottom: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    color: var(--ink);
+    min-width: 0;
+    position: relative;
+    overflow: hidden;
   }
+  .status::before {
+    /* 顶部一条琥珀色装饰条，强化「状态栏」感 */
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--border);
+  }
+  .status .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ink-faint);
+    flex-shrink: 0;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  .status #status-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .status .status-tag {
+    flex-shrink: 0;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    padding-left: 8px;
+    border-left: 1px solid var(--border);
+  }
+  .status.connected {
+    border-color: var(--border-amber);
+    background: linear-gradient(180deg, var(--amber-soft), transparent 60%), var(--panel);
+  }
+  .status.connected::before { background: var(--amber); }
+  .status.connected .dot {
+    background: var(--amber);
+    animation: pulse-dot var(--pulse);
+  }
+  .status.connected .status-tag { color: var(--amber); }
+  .status.disconnected {
+    border-color: rgba(255, 107, 90, 0.35);
+  }
+  .status.disconnected::before { background: var(--red); }
+  .status.disconnected .dot { background: var(--red); }
+  .status.disconnected .status-tag { color: var(--red); }
+
+  @keyframes pulse-dot {
+    0%, 100% {
+      box-shadow: 0 0 0 0 var(--amber-glow), 0 0 8px var(--amber-glow);
+    }
+    50% {
+      box-shadow: 0 0 0 5px transparent, 0 0 14px var(--amber-glow);
+    }
+  }
+
   .help-btn {
     flex: 0 0 auto;
     width: 44px;
     padding: 0;
-    background: #fff;
-    color: #0071e3;
-    border: 1px solid #d2d2d7;
+    background: var(--panel);
+    color: var(--amber);
+    border: 1px solid var(--border);
+    font-family: var(--font-mono);
     font-size: 18px;
-    font-weight: 600;
-    border-radius: 10px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    font-weight: 700;
+    border-radius: 6px;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
+    transition: border-color 0.15s, color 0.15s;
   }
-  .help-btn:active { background: #f0f0f3; }
-  #help-modal { background: rgba(0,0,0,0.5); }
-  .help-card {
-    background: #fff;
-    color: #1d1d1f;
-    border-radius: 14px;
-    padding: 16px;
-    width: 90vw;
-    max-width: 420px;
-    max-height: 80vh;
+  .help-btn:active {
+    background: var(--panel-hi);
+    border-color: var(--border-amber);
+  }
+
+  /* ====== 输入区（终端 prompt 风格）====== */
+  .input-shell {
+    flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    min-height: 0;
   }
-  .help-title {
-    font-size: 17px;
-    font-weight: 600;
-    text-align: center;
-  }
-  .help-version {
-    text-align: center;
-    font-size: 12px;
-    color: #86868b;
-    margin-top: -6px;
-  }
-  .help-content {
-    overflow-y: auto;
-    font-size: 14px;
-    line-height: 1.6;
-    -webkit-overflow-scrolling: touch;
-  }
-  .help-content h3 {
-    font-size: 14px;
-    margin-top: 12px;
-    margin-bottom: 4px;
-    color: #0071e3;
-  }
-  .help-content h3:first-child { margin-top: 0; }
-  .help-content p {
-    color: #424245;
-    margin-bottom: 6px;
-  }
-  #help-close {
-    width: auto;
-    align-self: center;
-    padding: 10px 32px;
-    background: #0071e3;
-    color: #fff;
-  }
-  #touchpad-modal { background: rgba(0,0,0,0.85); }
-  .touchpad {
-    background: #1c1c1e;
-    color: #fff;
-    border-radius: 14px;
-    width: calc(100vw - 32px);
-    max-width: 520px;
-    height: calc(100vh - 32px);
-    max-height: 800px;
+  .input-wrap {
+    flex: 1;
     display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
     overflow: hidden;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    min-height: 60px;
   }
-  .touchpad-header {
+  .input-wrap:focus-within {
+    border-color: var(--border-amber);
+    box-shadow: 0 0 0 1px var(--border-amber), 0 0 24px -8px var(--amber-glow);
+  }
+  .prompt {
+    flex: 0 0 auto;
+    padding: 14px 4px 14px 14px;
+    font-family: var(--font-mono);
+    font-size: 16px;
+    color: var(--amber);
+    user-select: none;
+    line-height: 1.5;
+    font-weight: 600;
+  }
+  .prompt::after {
+    /* 焦点时的光标闪烁 */
+    content: '_';
+    display: none;
+    margin-left: 2px;
+    animation: blink 1s steps(2, start) infinite;
+  }
+  .input-wrap:focus-within .prompt::after { display: inline; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  textarea {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    padding: 14px 14px 14px 6px;
+    font-size: 16px;
+    font-family: var(--font-sans);
+    resize: none;
+    background: transparent;
+    color: var(--ink);
+    caret-color: var(--amber);
+    line-height: 1.5;
+  }
+  textarea::placeholder { color: var(--ink-faint); }
+
+  /* ====== 自动发送开关 + 主题切换按钮 ====== */
+  .meta-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    align-items: stretch;
+  }
+  .auto-send {
+    flex: 1;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 0 4px;
-  }
-  .touchpad-status {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
-    color: #ccc;
-  }
-  .touchpad-status .dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: #999;
-  }
-  .touchpad-status.connected .dot { background: #2cb24a; }
-  .touchpad-status.disconnected .dot { background: #d33; }
-  #touchpad-close {
-    width: auto;
-    padding: 6px 16px;
-    background: #444;
-    color: #fff;
-    font-size: 13px;
-  }
-  .touch-area {
-    flex: 1;
-    background: #2c2c2e;
-    border-radius: 10px;
-    touch-action: none;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    cursor: pointer;
     -webkit-user-select: none;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
+    margin-top: 0;
+  }
+  .auto-send:hover { border-color: var(--border-hi); }
+  .theme-btn {
+    flex: 0 0 auto;
+    width: 44px;
+    background: var(--panel);
+    color: var(--amber);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: border-color 0.15s, background 0.15s;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #666;
-    font-size: 13px;
-    cursor: pointer;
-  }
-  .touch-area:active { background: #3a3a3c; }
-  #touchpad-modal .touchpad-buttons {
-    display: flex;
-    gap: 8px;
-    width: 100%;
-  }
-  #touchpad-modal .touchpad-buttons button {
-    flex: 1;
-    min-width: 0;
-    height: 38px;
-    background: #48484a;
-    color: #fff;
     padding: 0;
     font-size: 18px;
-    border-radius: 10px;
-    -webkit-tap-highlight-color: transparent;
+    line-height: 1;
   }
-  #touchpad-modal .touchpad-buttons button:active { background: #5a5a5c; }
-  .touchpad-hint {
-    font-size: 11px;
-    color: #888;
-    text-align: center;
+  .theme-btn:hover {
+    border-color: var(--border-amber);
+    background: var(--panel-hi);
   }
-  textarea {
-    flex: 1;
-    min-height: 70px;
-    border: 1px solid #d2d2d7;
-    border-radius: 10px;
-    padding: 14px;
-    font-size: 16px;
-    font-family: inherit;
-    resize: none;
-    background: #fff;
-    outline: none;
-  }
-  textarea:focus { border-color: #0071e3; }
-  .row {
-    display: flex;
-    gap: 8px;
-    margin-top: 12px;
-  }
-  button {
-    flex: 1;
-    padding: 14px 24px;
-    background: #0071e3;
-    color: white;
-    border: none;
-    border-radius: 10px;
-    font-size: 16px;
-    font-weight: 500;
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
-  }
-  button:active { background: #0058b9; }
-  button:disabled { background: #b8b8bf; cursor: not-allowed; }
-  button.secondary {
-    flex: 0 0 auto;
-    background: #fff;
-    color: #0071e3;
-    padding: 14px 18px;
-    border: 1px solid #0071e3;
-  }
-  .row.tools button {
-    background: #f0f0f3;
-    color: #1d1d1f;
-    font-size: 14px;
-    padding: 12px 8px;
-  }
-  .row.tools button:active {
-    background: #e0e0e5;
-  }
-  .auto-send {
+  .theme-btn:active { background: var(--panel-hi); }
+  .auto-send .label {
     display: flex;
     align-items: center;
     gap: 6px;
-    margin-top: 10px;
+  }
+  .auto-send .label::before {
+    content: '⚡';
     font-size: 13px;
-    color: #6e6e73;
-    cursor: pointer;
-    -webkit-user-select: none;
-    user-select: none;
+    filter: grayscale(0.3);
   }
-  .auto-send input {
-    width: 16px;
-    height: 16px;
-    margin: 0;
-    cursor: pointer;
-    accent-color: #0071e3;
+  .auto-send input { display: none; }
+  .auto-send .switch {
+    flex: 0 0 36px;
+    height: 18px;
+    border-radius: 9px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    position: relative;
+    transition: background 0.2s, border-color 0.2s;
   }
+  .auto-send .switch::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--ink-dim);
+    transition: transform 0.2s, background 0.2s;
+  }
+  .auto-send input:checked ~ .switch {
+    background: var(--amber-soft);
+    border-color: var(--border-amber);
+  }
+  .auto-send input:checked ~ .switch::after {
+    transform: translateX(18px);
+    background: var(--amber);
+    box-shadow: 0 0 8px var(--amber-glow);
+  }
+
+  /* ====== 主按钮区 ====== */
+  .row {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  button {
+    flex: 1;
+    padding: 13px 16px;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.12s, border-color 0.12s, color 0.12s, box-shadow 0.12s;
+  }
+  button:hover { border-color: var(--border-hi); }
+  button:active { background: var(--panel-hi); }
+  button:disabled {
+    background: var(--panel);
+    color: var(--ink-faint);
+    cursor: not-allowed;
+    border-color: var(--border);
+  }
+  /* 主 SEND 按钮：琥珀填充 */
+  #send {
+    background: var(--amber);
+    color: var(--bg);
+    border-color: var(--amber);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 700;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  #send:hover {
+    background: var(--amber-hi);
+    border-color: var(--amber-hi);
+    box-shadow: 0 0 24px -4px var(--amber-glow);
+  }
+  #send:active { background: var(--amber-hi); }
+  #send:disabled {
+    background: var(--panel);
+    color: var(--ink-faint);
+    border-color: var(--border);
+    box-shadow: none;
+  }
+  /* 次按钮：硬朗边框、单字符图标 */
+  button.secondary {
+    flex: 0 0 auto;
+    width: 48px;
+    padding: 13px 0;
+    background: var(--panel);
+    color: var(--ink);
+    font-size: 16px;
+  }
+  button.secondary:hover { color: var(--amber); border-color: var(--border-amber); }
+
+  /* ====== 工具按钮面板 ====== */
+  .tool-panel {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.28s ease-out, margin-top 0.28s ease-out, opacity 0.2s ease-out;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    opacity: 0;
+  }
+  .tool-panel.open {
+    max-height: 360px;
+    margin-top: 8px;
+    opacity: 1;
+  }
+  .sheet-group { display: flex; flex-direction: column; gap: 4px; }
+  .sheet-group-title {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding: 4px 4px 0;
+  }
+  .sheet-row {
+    display: flex;
+    gap: 8px;
+  }
+  .sheet-row button {
+    background: var(--panel);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    padding: 12px 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    line-height: 1.2;
+  }
+  .sheet-row button:hover { color: var(--amber); border-color: var(--border-amber); }
+  .sheet-row button .ic {
+    font-size: 15px;
+    filter: grayscale(0.4);
+    opacity: 0.9;
+  }
+
+  /* ====== Toast ====== */
   #toast {
     position: fixed;
     bottom: 24px;
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(0,0,0,0.85);
-    color: #fff;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--border-amber);
     padding: 10px 18px;
-    border-radius: 8px;
-    font-size: 14px;
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.02em;
     pointer-events: none;
     opacity: 0;
-    transition: opacity 0.2s;
+    transition: opacity 0.2s, transform 0.2s;
     z-index: 100;
     max-width: 90vw;
     text-align: center;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4), 0 0 24px -8px var(--amber-glow);
   }
-  #toast.show { opacity: 1; }
+  #toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-2px);
+  }
+
+  /* ====== Modal 共用 ====== */
   .modal {
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.9);
+    background: rgba(20, 17, 11, 0.88);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
     display: none;
     align-items: center;
     justify-content: center;
@@ -294,79 +504,112 @@
     object-fit: contain;
     -webkit-user-select: none;
     user-select: none;
+    border: 1px solid var(--border);
   }
   .modal-hint {
-    color: #ccc;
-    font-size: 13px;
+    color: var(--ink-dim);
+    font-family: var(--font-mono);
+    font-size: 12px;
     text-align: center;
+    letter-spacing: 0.02em;
   }
   .modal button {
     flex: 0 0 auto;
     width: auto;
     padding: 10px 32px;
-    background: #0071e3;
-    color: #fff;
+    background: var(--amber);
+    color: var(--bg);
+    border-color: var(--amber);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
   }
+
+  /* ====== 图片预览 modal ====== */
+  #img-modal { background: rgba(20, 17, 11, 0.92); }
+
+  /* ====== 传输进度 modal ====== */
   #transfer-modal {
-    background: rgba(0,0,0,0.92);
-    color: #fff;
+    background: rgba(20, 17, 11, 0.94);
+    color: var(--ink);
     gap: 20px;
     text-align: center;
   }
   #transfer-modal .transfer-title {
-    font-size: 15px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--ink-dim);
     word-break: break-all;
     max-width: 90vw;
+    letter-spacing: 0.02em;
   }
   #transfer-modal progress {
     width: 80vw;
     max-width: 360px;
-    height: 8px;
+    height: 6px;
     -webkit-appearance: none;
     appearance: none;
     border: none;
-    border-radius: 4px;
+    border-radius: 3px;
     overflow: hidden;
+    background: var(--bg-elev);
   }
   #transfer-modal progress::-webkit-progress-bar {
-    background: rgba(255,255,255,0.15);
-    border-radius: 4px;
+    background: var(--bg-elev);
+    border-radius: 3px;
   }
   #transfer-modal progress::-webkit-progress-value {
-    background: #0071e3;
-    border-radius: 4px;
+    background: var(--amber);
+    border-radius: 3px;
     transition: width 0.15s;
+    box-shadow: 0 0 8px var(--amber-glow);
+  }
+  #transfer-modal progress::-moz-progress-bar {
+    background: var(--amber);
+    border-radius: 3px;
   }
   #transfer-modal .transfer-stats {
-    font-size: 13px;
-    color: #ccc;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--amber);
     font-variant-numeric: tabular-nums;
+    letter-spacing: 0.04em;
   }
   #transfer-cancel {
-    background: #444;
-    color: #fff;
+    background: transparent;
+    color: var(--ink-dim);
+    border-color: var(--border);
     padding: 8px 24px;
-    font-size: 14px;
+    font-size: 13px;
   }
-  #file-list-modal {
-    background: rgba(0,0,0,0.6);
-  }
+  #transfer-cancel:hover { color: var(--red); border-color: var(--red); }
+
+  /* ====== 文件列表 modal ====== */
+  #file-list-modal { background: rgba(20, 17, 11, 0.85); }
   #file-list-modal .file-list-card {
-    background: #fff;
-    color: #1d1d1f;
-    border-radius: 14px;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--border-amber);
+    border-radius: 8px;
     padding: 16px;
     width: 86vw;
     max-width: 380px;
     max-height: 75vh;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.5), 0 0 40px -10px var(--amber-glow);
   }
   .file-list-title {
-    font-size: 15px;
-    font-weight: 600;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--amber);
     text-align: center;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
   }
   .file-list-items {
     overflow-y: auto;
@@ -377,70 +620,303 @@
   }
   .file-list-item {
     padding: 12px;
-    border: 1px solid #d2d2d7;
-    border-radius: 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
     cursor: pointer;
     text-align: left;
-    background: #fff;
-    font-size: 14px;
+    background: var(--bg-elev);
+    font-size: 13px;
     -webkit-tap-highlight-color: transparent;
+    transition: border-color 0.12s, background 0.12s;
   }
-  .file-list-item:active {
-    background: #f0f0f3;
+  .file-list-item:hover {
+    border-color: var(--border-amber);
+    background: var(--panel-hi);
   }
+  .file-list-item:active { background: var(--panel-hi); }
   .file-list-item .name {
     font-weight: 500;
+    color: var(--ink);
     word-break: break-all;
+    font-family: var(--font-mono);
+    font-size: 13px;
   }
   .file-list-item .meta {
-    color: #6e6e73;
-    font-size: 12px;
+    color: var(--ink-dim);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
   }
   #file-list-close {
     width: auto;
     align-self: center;
+    background: transparent;
+    color: var(--ink-dim);
+    border-color: var(--border);
+    font-size: 13px;
     padding: 10px 32px;
-    background: #f0f0f3;
-    color: #1d1d1f;
-    font-size: 14px;
+    text-transform: none;
+    letter-spacing: 0.02em;
+    font-weight: 500;
   }
-  .tool-panel {
-    max-height: 0;
+
+  /* ====== 帮助 modal ====== */
+  #help-modal { background: rgba(20, 17, 11, 0.88); }
+  .help-card {
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--border-amber);
+    border-radius: 8px;
+    padding: 0;
+    width: 92vw;
+    max-width: 440px;
+    max-height: 82vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.5), 0 0 40px -10px var(--amber-glow);
     overflow: hidden;
-    transition: max-height 0.25s ease-out, margin-top 0.25s ease-out;
+  }
+  .help-header {
+    padding: 16px 20px 14px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, var(--amber-soft), transparent);
+    text-align: center;
+  }
+  .help-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.3em;
+    color: var(--amber);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .help-title {
+    font-family: var(--font-mono);
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: 0.02em;
+  }
+  .help-version {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-faint);
+    margin-top: 4px;
+    letter-spacing: 0.04em;
+  }
+  .help-content {
+    overflow-y: auto;
+    padding: 16px 20px;
+    font-size: 13.5px;
+    line-height: 1.65;
+    -webkit-overflow-scrolling: touch;
+  }
+  .help-content h3 {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--amber);
+    margin-top: 14px;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .help-content h3::before {
+    content: '▸';
+    color: var(--amber);
+    font-size: 10px;
+  }
+  .help-content h3:first-child { margin-top: 0; }
+  .help-content p {
+    color: var(--ink);
+    margin-bottom: 6px;
+  }
+  .help-content b {
+    color: var(--amber);
+    font-weight: 600;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+  }
+  .help-content a {
+    color: var(--amber);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-color: var(--border-amber);
+    transition: text-decoration-color 0.15s, color 0.15s;
+  }
+  .help-content a:hover {
+    color: var(--amber-hi);
+    text-decoration-color: var(--amber);
+  }
+  #help-close {
+    margin: 0 20px 16px;
+    width: auto;
+    align-self: stretch;
+    padding: 12px;
+    background: var(--amber);
+    color: var(--bg);
+    border-color: var(--amber);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 700;
+    font-size: 13px;
+  }
+
+  /* ====== 触控板 modal ====== */
+  #touchpad-modal {
+    background: rgba(20, 17, 11, 0.96);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  .touchpad {
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--border-amber);
+    border-radius: 10px;
+    width: calc(100vw - 32px);
+    max-width: 520px;
+    height: calc(100vh - 32px);
+    max-height: 800px;
     display: flex;
     flex-direction: column;
     gap: 10px;
+    padding: 14px;
+    overflow: hidden;
+    box-shadow: 0 0 60px -20px var(--amber-glow);
   }
-  .tool-panel.open {
-    max-height: 360px;
-    margin-top: 10px;
-  }
-  .sheet-group {
+  .touchpad-header {
     display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .sheet-group-title {
-    font-size: 12px;
-    color: #6e6e73;
-    padding: 0 4px;
-  }
-  .sheet-row {
-    display: flex;
+    align-items: center;
+    justify-content: space-between;
     gap: 8px;
+    padding: 0 4px 8px;
+    border-bottom: 1px solid var(--border);
   }
-  .sheet-row button {
-    background: #f0f0f3;
-    color: #1d1d1f;
-    font-size: 14px;
-    padding: 12px 8px;
+  .touchpad-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
   }
-  .sheet-row button:active {
-    background: #e0e0e5;
+  .touchpad-status .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ink-faint);
+  }
+  .touchpad-status.connected .dot {
+    background: var(--amber);
+    animation: pulse-dot var(--pulse);
+  }
+  .touchpad-status.connected { color: var(--amber); }
+  .touchpad-status.disconnected .dot { background: var(--red); }
+  .touchpad-status.disconnected { color: var(--red); }
+  #touchpad-close {
+    width: auto;
+    padding: 6px 14px;
+    background: transparent;
+    color: var(--ink-dim);
+    border: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+  #touchpad-close:hover { color: var(--red); border-color: var(--red); }
+  .touch-area {
+    flex: 1;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink-faint);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    text-align: center;
+    padding: 20px;
+    line-height: 1.6;
+    position: relative;
+  }
+  .touch-area::before {
+    /* 角落装饰：四角刻度，强化「触控区」控制台质感 */
+    content: '';
+    position: absolute;
+    top: 8px; left: 8px;
+    width: 12px; height: 12px;
+    border-top: 1px solid var(--border-hi);
+    border-left: 1px solid var(--border-hi);
+    pointer-events: none;
+  }
+  .touch-area::after {
+    content: '';
+    position: absolute;
+    bottom: 8px; right: 8px;
+    width: 12px; height: 12px;
+    border-bottom: 1px solid var(--border-hi);
+    border-right: 1px solid var(--border-hi);
+    pointer-events: none;
+  }
+  .touch-area:active {
+    background: var(--panel-hi);
+    border-color: var(--border-amber);
+  }
+  #touchpad-modal .touchpad-buttons {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 6px;
+    width: 100%;
+  }
+  #touchpad-modal .touchpad-buttons button {
+    min-width: 0;
+    height: 44px;
+    background: var(--bg-elev);
+    color: var(--ink);
+    padding: 0;
+    font-size: 16px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    -webkit-tap-highlight-color: transparent;
+    font-family: var(--font-mono);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #touchpad-modal .touchpad-buttons button:hover {
+    border-color: var(--border-amber);
+    color: var(--amber);
+  }
+  #touchpad-modal .touchpad-buttons button:active {
+    background: var(--amber-soft);
+    border-color: var(--amber);
+  }
+  .touchpad-hint {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--ink-faint);
+    text-align: center;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 2px 0;
   }
 </style>
 </head>
@@ -449,30 +925,48 @@
   <div class="status" id="status">
     <span class="dot"></span>
     <span id="status-text">连接中...</span>
+    <span class="status-tag">LINK</span>
   </div>
   <button id="btn-help" class="help-btn" aria-label="帮助">?</button>
 </div>
-<textarea id="text" placeholder="点击这里输入文本，或粘贴截图..." autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>
-<label class="auto-send">
-  <input type="checkbox" id="auto-send">
-  <span>⚡ 自动发送</span>
-</label>
+<div class="input-shell">
+  <div class="input-wrap">
+    <span class="prompt">&gt;</span>
+    <textarea id="text" placeholder="点击这里输入文本，或粘贴截图..." autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>
+  </div>
+</div>
+<div class="meta-row">
+  <label class="auto-send">
+    <span class="label">自动发送 · 600ms</span>
+    <input type="checkbox" id="auto-send">
+    <span class="switch"></span>
+  </label>
+  <button id="btn-theme" class="theme-btn" aria-label="切换主题" title="切换主题">
+    <span class="theme-icon">◐</span>
+  </button>
+</div>
 <div class="row">
   <button id="send" disabled>发送</button>
-  <button id="btn-enter" class="secondary">⏎</button>
-  <button id="clear" class="secondary">🗑</button>
-  <button id="btn-tools" class="secondary">🛠</button>
+  <button id="btn-enter" class="secondary" aria-label="Enter">⏎</button>
+  <button id="clear" class="secondary" aria-label="清空">CLR</button>
+  <button id="btn-tools" class="secondary" aria-label="工具">≡</button>
 </div>
 <div id="tool-panel" class="tool-panel">
-  <div class="sheet-row">
-    <button id="btn-pull-text">📋 拉文本</button>
-    <button id="btn-pull-image">🖼 拉图片</button>
-    <button id="btn-pull-file">📎 拉文件</button>
+  <div class="sheet-group">
+    <!--- <div class="sheet-group-title">PC → 手机</div> --->
+    <div class="sheet-row">
+      <button id="btn-pull-text"><span class="ic">📋</span>拉文本</button>
+      <button id="btn-pull-image"><span class="ic">🖼</span>拉图片</button>
+      <button id="btn-pull-file"><span class="ic">📎</span>拉文件</button>
+    </div>
   </div>
-  <div class="sheet-row">
-    <button id="btn-pick-image">📷 推图片</button>
-    <button id="btn-send-file">📁 推文件</button>
-    <button id="btn-touchpad">🖱 触控板</button>
+  <div class="sheet-group">
+    <!--- <div class="sheet-group-title">手机 → PC</div> --->
+    <div class="sheet-row">
+      <button id="btn-pick-image"><span class="ic">📷</span>推图片</button>
+      <button id="btn-send-file"><span class="ic">📁</span>推文件</button>
+      <button id="btn-touchpad"><span class="ic">🖱</span>触控板</button>
+    </div>
   </div>
 </div>
 <input id="file-pick" type="file" accept="image/*" hidden>
@@ -501,24 +995,27 @@
 
 <div id="help-modal" class="modal">
   <div class="help-card">
-    <div class="help-title">使用说明</div>
-    <div class="help-version" id="help-version"></div>
+    <div class="help-header">
+      <div class="help-eyebrow">QR · CONTROL</div>
+      <div class="help-title">使用说明</div>
+      <div class="help-version" id="help-version"></div>
+    </div>
     <div class="help-content">
       <h3>连接</h3>
       <p>PC 启动后会显示二维码——双击启动自动弹出二维码窗口，命令行启动则在终端里打印。用手机系统相机或微信「扫一扫」扫描，浏览器自动打开本页面。</p>
       <h3>文本注入</h3>
-      <p>在输入框输入文字（含语音输入）。开启「⚡ 自动发送」后停顿 600ms 自动提交；也可手动点「发送」或按 Enter。文字会注入到 PC 当前焦点窗口，无需切换输入法，中文 / emoji 直接出字。</p>
+      <p>在输入框输入文字（含语音输入）。开启<b>自动发送</b>后停顿 600ms 自动提交；也可手动点「发送」或按 Enter。文字会注入到 PC 当前焦点窗口，无需切换输入法，中文 / emoji 直接出字。</p>
       <h3>剪贴板同步</h3>
-      <p><b>📋 拉文本</b>：把 PC 剪贴板的文本取到手机。</p>
-      <p><b>🖼 拉图片</b>：把 PC 剪贴板的图片取到手机预览，长按可保存到相册。</p>
-      <p><b>📷 推图片</b>：选手机相册图片或粘贴截图，写入 PC 剪贴板。</p>
+      <p><b>拉文本</b>：把 PC 剪贴板的文本取到手机。</p>
+      <p><b>拉图片</b>：把 PC 剪贴板的图片取到手机预览，长按可保存到相册。</p>
+      <p><b>推图片</b>：选手机相册图片或粘贴截图，写入 PC 剪贴板。</p>
       <h3>文件传输</h3>
-      <p><b>📎 拉文件</b>：下载 PC 剪贴板里复制的文件（Finder / 资源管理器里 Cmd+C / Ctrl+C 复制的文件）。</p>
-      <p><b>📁 发送文件</b>：把手机文件传到 PC 的文件保存目录（默认下载目录下的 qrctrl 子目录，可在 PC 托盘菜单 →「配置...」中修改）。</p>
+      <p><b>拉文件</b>：下载 PC 剪贴板里复制的文件（Finder / 资源管理器里 Cmd+C / Ctrl+C 复制的文件）。</p>
+      <p><b>推文件</b>：把手机文件传到 PC 的文件保存目录（默认下载目录下的 qrctrl 子目录，可在 PC 托盘菜单 →「配置...」中修改）。</p>
       <h3>鼠标触控板</h3>
-      <p>点 🖱 触控板 进入鼠标控制：拖动移动指针，轻点左键，双击后按住拖动；底部按钮支持滚动、左右键、复制 / 粘贴快捷键。</p>
+      <p>点 <b>触控板</b> 进入鼠标控制：拖动移动指针，轻点左键，双击后按住拖动；底部按钮支持滚动、左右键、复制 / 粘贴快捷键。</p>
       <h3>配置</h3>
-      <p>PC 端托盘菜单 →「配置...」打开浏览器配置页，可修改监听端口、设备名、文件保存目录、IP 偏好等参数，保存后重启生效。</p>
+      <p>PC 端托盘菜单 →「配置...」打开浏览器<a id="help-config-link" href="#">配置页</a>，可修改监听端口、设备名、文件保存目录、IP 偏好等参数，保存后重启生效。</p>
       <h3>权限</h3>
       <p>macOS 首次启动需授予「辅助功能」权限（系统设置 → 隐私与安全性）。Windows / Linux 无需特殊权限。</p>
       <h3>安全</h3>
@@ -548,7 +1045,7 @@
       <button id="btn-copy">📋</button>
       <button id="btn-paste">📥</button>
     </div>
-    <div class="touchpad-hint">底部按钮：滚动 / 左右键 / 复制粘贴</div>
+    <div class="touchpad-hint">SCROLL · L · R · SCROLL · COPY · PASTE</div>
   </div>
 </div>
 
@@ -603,6 +1100,58 @@ const btnScrollUp = document.getElementById('btn-scroll-up');
 const btnScrollDown = document.getElementById('btn-scroll-down');
 const btnMouseLeft = document.getElementById('btn-mouse-left');
 const btnMouseRight = document.getElementById('btn-mouse-right');
+const btnTheme = document.getElementById('btn-theme');
+const themeIcon = btnTheme ? btnTheme.querySelector('.theme-icon') : null;
+
+// 主题偏好：'dark' / 'light' / 'system'。从 <html data-theme> 拿首屏值（服务端注入 +
+// inline script 已 resolve 过）。后续 ws server_info 推过来时会覆盖。
+// resolvedTheme 是 'dark' 或 'light'（system 已解析后的实际值），用于切换按钮决定下一态。
+let currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+
+function resolvedThemeNow() {
+  // data-theme 已经是 dark/light（inline script 已 resolve），直接读
+  return document.documentElement.getAttribute('data-theme') || 'dark';
+}
+
+function applyThemeToDom(theme) {
+  // theme: 'dark' / 'light' / 'system'。system → 用 prefers-color-scheme 解析。
+  currentTheme = theme;
+  let resolved = theme;
+  if (theme === 'system' || !theme) {
+    resolved = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  document.documentElement.setAttribute('data-theme', resolved);
+  updateThemeIcon(resolved);
+}
+
+function updateThemeIcon(resolved) {
+  if (!themeIcon) return;
+  // 当前是 dark 时显示☀（点击切到 light）；当前是 light 时显示☾（点击切到 dark）。
+  // 用 ASCII 字符避免 emoji 渲染差异（不同平台字体宽度不一，按钮内会跳动）。
+  themeIcon.textContent = resolved === 'dark' ? '☀' : '☾';
+}
+
+function toggleTheme() {
+  const cur = resolvedThemeNow();
+  const next = cur === 'dark' ? 'light' : 'dark';
+  applyThemeToDom(next);
+  // 持久化（live apply + 写 config.toml）。失败不回滚 UI——用户视觉偏好优先，
+  // 文件写失败时下次启动会回到旧 theme，可接受。
+  fetch(`${location.origin}/api/theme?t=${encodeURIComponent(token)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ theme: next }),
+  }).catch(() => {});
+}
+
+// 系统主题变化时，若当前偏好是 system，实时跟随（用户没显式选过 dark/light）
+if (window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+    if (currentTheme === 'system') {
+      applyThemeToDom('system');
+    }
+  });
+}
 
 let ws = null;
 let reconnectDelay = 1000;
@@ -664,6 +1213,11 @@ function connect() {
         deviceName = m.name || 'PC';
         if (m.version) {
           document.getElementById('help-version').textContent = 'v' + m.version;
+        }
+        // 服务端推送当前主题偏好，覆盖首屏 inline script 的解析结果。
+        // 用户在 PC 端切换 theme 后这里会立即同步（如果当前 ws 还连着）。
+        if (m.theme) {
+          applyThemeToDom(m.theme);
         }
         setStatus(`${deviceName} 已连接`, true);
         break;
@@ -781,6 +1335,11 @@ async function uploadImage(file) {
 
 // 按钮绑定
 sendBtn.addEventListener('click', sendText);
+if (btnTheme) {
+  btnTheme.addEventListener('click', toggleTheme);
+  // 初始化图标状态（与首屏已 resolve 的 data-theme 对齐）
+  updateThemeIcon(resolvedThemeNow());
+}
 clearBtn.addEventListener('click', () => { cancelAutoSend(); textEl.value = ''; });
 textEl.addEventListener('compositionstart', () => { isComposing = true; });
 textEl.addEventListener('compositionend', () => {
@@ -807,6 +1366,8 @@ modal.addEventListener('click', (e) => {
 });
 helpBtn.addEventListener('click', () => helpModal.classList.add('show'));
 helpClose.addEventListener('click', () => helpModal.classList.remove('show'));
+// 配置页链接：直接跳到 /config?t=<token>，省去托盘菜单路径
+document.getElementById('help-config-link').href = `/config?t=${encodeURIComponent(token)}`;
 helpModal.addEventListener('click', (e) => {
   if (e.target === helpModal) helpModal.classList.remove('show');
 });

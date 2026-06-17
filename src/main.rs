@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::{response::Html, routing::{get, post}, Router};
+use axum::{extract::State, response::Html, routing::{get, post}, Router};
 use clap::Parser;
 use enigo::{Enigo, Settings};
 use tokio::sync::Notify;
@@ -32,7 +32,7 @@ const DEFAULT_MAX_SIZE: u64 = 10 * 1024 * 1024 * 1024; // 10 GB
 const REGISTRY_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Parser)]
-#[command(version, about = "qrctrl — 用手机扫码控制 PC")]
+#[command(version, about = "QR Control")]
 struct Cli {
     /// 监听地址
     #[arg(short, long)]
@@ -234,6 +234,9 @@ fn main() {
     let addr = cli.addr.clone().or(file_cfg.addr.clone()).unwrap_or_else(|| "0.0.0.0".to_string());
     let max_size = cli.max_size.or(file_cfg.max_size).unwrap_or(DEFAULT_MAX_SIZE);
     let prefer_ip = cli.prefer_ip.clone().or(file_cfg.prefer_ip.clone());
+    // 主题：config.toml 显式给出 → 用之；都没有 → "system"（前端按 prefers-color-scheme 决定）。
+    // CLI 不暴露 theme 参数——这是 UI 偏好而非启动配置，CLI 化没意义。
+    let theme = file_cfg.theme.clone().unwrap_or_else(|| "system".to_string());
 
     // 端口探测（用户没传 --port 时从 8080 起递增找可用端口）。
     // 实际 listener 在 server 线程内由 tokio 重新 bind，见上方 probe_port 注释。
@@ -288,6 +291,7 @@ fn main() {
                 port,
                 prefer_ip,
                 max_size,
+                theme,
                 server_shutdown,
                 tray_proxy,
                 save_dir,
@@ -315,6 +319,20 @@ fn main() {
     }
 }
 
+/// `GET /` → index.html，首屏注入当前主题。
+///
+/// 主题占位符 `data-theme="__THEME__"` 在 HTML 模板里。这里读 `state.theme`（可能被
+/// `set_theme_handler` 在运行时改过）替换占位符。inline `<script>` 会同步把 `"system"`
+/// 解析成 dark/light 应用到 `<html>`，避免 CSS 应用后的 FOUC。
+async fn index_handler(State(state): State<AppState>) -> Html<String> {
+    let theme = state.theme.lock().unwrap().clone();
+    let html = INDEX_HTML.replace(
+        "data-theme=\"__THEME__\"",
+        &format!("data-theme=\"{}\"", theme),
+    );
+    Html(html)
+}
+
 async fn async_main(
     token: String,
     name: String,
@@ -322,6 +340,7 @@ async fn async_main(
     port: u16,
     prefer_ip: Option<String>,
     max_size: u64,
+    theme: String,
     shutdown_notify: Arc<Notify>,
     tray_proxy: tao::event_loop::EventLoopProxy<tray::UserEvent>,
     save_dir: PathBuf,
@@ -363,15 +382,17 @@ async fn async_main(
         registry,
         shutdown_notify: shutdown_notify.clone(),
         tray_proxy,
+        theme: Arc::new(Mutex::new(theme)),
     };
 
     let app = Router::new()
-        .route("/", get(|| async { Html(INDEX_HTML) }))
+        .route("/", get(index_handler))
         .route("/ws", get(ws::ws_handler))
         .route("/upload/{id}", post(file_transfer::upload_handler))
         .route("/download/{id}", get(file_transfer::download_handler))
         .route("/config", get(config::config_page_handler))
         .route("/api/config", get(config::get_config_handler).post(config::set_config_handler))
+        .route("/api/theme", post(config::set_theme_handler))
         .route("/api/list_dir", get(config::list_dir_handler))
         .route("/api/local_ips", get(config::local_ips_handler))
         .route("/api/check_port", get(config::check_port_handler))

@@ -32,4 +32,9 @@ pub struct AppState {
     pub shutdown_notify: Arc<Notify>,
     /// 给 server 线程用来唤醒 tao event loop（restart 信号需要让 tray loop 退出）。
     pub tray_proxy: EventLoopProxy<UserEvent>,
+    /// UI 主题偏好：`"dark"` / `"light"` / `"system"`。
+    /// 用 `Arc<Mutex<String>>` 是因为 theme 走 live-apply——前端切换按钮 POST /api/theme
+    /// 后立即改这个值，所有后续 ws server_info 推送都会带新 theme。其他配置字段都不需要
+    /// 运行时可变（改了也只写文件、等重启生效）。
+    pub theme: Arc<Mutex<String>>,
 }
