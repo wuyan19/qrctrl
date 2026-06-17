@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>qrctrl 配置</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f5f5f7;
+    color: #1d1d1f;
+    padding: 16px;
+    max-width: 640px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: #6e6e73; font-size: 13px; margin-bottom: 18px; }
+  .card {
+    background: #fff;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 14px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .field { margin-bottom: 14px; }
+  .field:last-child { margin-bottom: 0; }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: #1d1d1f;
+    margin-bottom: 6px;
+  }
+  .hint { font-size: 12px; color: #6e6e73; margin-top: 4px; font-weight: 400; }
+  input[type=text], input[type=number], input[type=password], select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    font-size: 14px;
+    background: #fff;
+    color: #1d1d1f;
+    font-family: inherit;
+  }
+  input:focus, select:focus { outline: none; border-color: #0071e3; }
+  input.invalid { border-color: #d33; }
+  .row { display: flex; gap: 8px; align-items: stretch; }
+  .row > input { flex: 1; }
+  .row > .btn-small { flex: 0 0 auto; }
+  .btn-small {
+    padding: 10px 14px;
+    border: 1px solid #d2d2d7;
+    background: #fff;
+    color: #0071e3;
+    font-weight: 600;
+    font-size: 13px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .btn-small:active { background: #f0f0f5; }
+  .btn-small:disabled { background: #f0f0f5; color: #aaa; cursor: not-allowed; border-color: #e5e5ea; }
+  .inline-unit {
+    display: flex; gap: 8px;
+  }
+  .inline-unit input { flex: 1; }
+  .inline-unit select { flex: 0 0 auto; width: auto; }
+  .token-row { position: relative; }
+  .token-row .toggle {
+    position: absolute;
+    right: 8px; top: 50%;
+    transform: translateY(-50%);
+    background: none; border: none; cursor: pointer;
+    font-size: 16px; color: #6e6e73;
+    padding: 4px 8px;
+  }
+  .warning {
+    background: #fff4e0;
+    border: 1px solid #f0c060;
+    color: #8a5a00;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    margin-top: 4px;
+  }
+  .actions { display: flex; gap: 10px; margin-top: 4px; }
+  .btn-primary {
+    flex: 1;
+    padding: 14px;
+    background: #0071e3;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .btn-primary:active { background: #005bb5; }
+  .btn-primary:disabled { background: #aaa; cursor: not-allowed; }
+  .btn-secondary {
+    flex: 0 0 auto;
+    padding: 14px 18px;
+    background: #fff;
+    color: #1d1d1f;
+    border: 1px solid #d2d2d7;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+  }
+  .btn-warning {
+    flex: 0 0 auto;
+    padding: 14px 18px;
+    background: #fff;
+    color: #b25000;
+    border: 1px solid #f0a050;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .btn-warning:hover { background: #fff4eb; }
+  .btn-warning:disabled { color: #aaa; border-color: #ddd; background: #fafafa; cursor: not-allowed; }
+  .banner {
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: #fff8d6;
+    border: 1px solid #f0c060;
+    color: #6a4a00;
+    font-size: 13px;
+    margin-bottom: 14px;
+    display: none;
+    line-height: 1.6;
+  }
+  .banner.show { display: block; }
+  .banner a { color: #0071e3; word-break: break-all; }
+  .banner .url { display: block; margin-top: 6px; font-family: ui-monospace, monospace; font-size: 12px; }
+
+  /* 目录选择模态 */
+  .modal-bg {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.4);
+    display: none;
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-bg.show { display: flex; }
+  .modal {
+    background: #fff;
+    border-radius: 12px;
+    width: 90%; max-width: 540px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .modal-header {
+    padding: 10px 16px;
+    border-bottom: 1px solid #e5e5ea;
+    font-size: 14px;
+    overflow-x: auto;
+    overflow-y: hidden; /* 面包屑单行；overflow-x: auto 会把 visible 强制成 auto，需显式 hidden 避免误出纵向滚动条 */
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    min-height: 28px;
+  }
+  #modal-breadcrumb { display: inline-flex; gap: 2px; align-items: center; }
+  #modal-breadcrumb a {
+    color: #0071e3; cursor: pointer; text-decoration: none;
+    font-size: 13px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    transition: background 0.12s;
+    user-select: none;
+  }
+  #modal-breadcrumb a:hover { background: #e8f1ff; }
+  #modal-breadcrumb a:active { background: #d4e4ff; }
+  /* 「此电脑」根入口：稍微突出，跟普通路径段区分 */
+  #modal-breadcrumb a.root-link {
+    font-weight: 600;
+  }
+  #modal-breadcrumb .sep { color: #aaa; font-size: 12px; padding: 0 2px; }
+  .modal-body {
+    flex: 1; overflow-y: auto;
+    padding: 4px 0;
+  }
+  .dir-entry {
+    padding: 12px 16px;
+    font-size: 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid #f0f0f5;
+  }
+  .dir-entry:hover { background: #f0f0f5; }
+  .dir-entry .icon { color: #6e6e73; }
+  .dir-entry.empty { color: #999; cursor: default; }
+  .dir-entry.empty:hover { background: transparent; }
+  .modal-footer {
+    padding: 12px 16px;
+    border-top: 1px solid #e5e5ea;
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .modal-current {
+    font-size: 12px; color: #6e6e73;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .modal-actions { display: flex; gap: 8px; }
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.85);
+    color: #fff;
+    padding: 10px 18px;
+    border-radius: 22px;
+    font-size: 13px;
+    z-index: 200;
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<h1>qrctrl 配置</h1>
+<div class="sub">修改后保存并重启 qrctrl 让配置生效。</div>
+
+<div id="banner" class="banner"></div>
+
+<div class="card">
+  <div class="field">
+    <label for="f-name">设备名</label>
+    <input type="text" id="f-name" placeholder="系统主机名">
+    <div class="hint">手机端状态栏显示用，区分多台被控设备。</div>
+  </div>
+
+  <div class="field">
+    <label for="f-addr">监听地址</label>
+    <input type="text" id="f-addr" placeholder="0.0.0.0">
+    <div class="hint">默认 0.0.0.0 = 监听所有网络接口。</div>
+  </div>
+
+  <div class="field">
+    <label for="f-port">监听端口</label>
+    <input type="number" id="f-port" placeholder="8080（留空自动探测）" min="1" max="65535">
+    <div class="hint" id="port-hint">留空 = 从 8080 起自动找一个可用端口。</div>
+  </div>
+
+  <div class="field">
+    <label for="f-save-dir">文件保存目录</label>
+    <div class="row">
+      <input type="text" id="f-save-dir" placeholder="<下载目录>/qrctrl/">
+      <button type="button" class="btn-small" id="browse-btn">浏览...</button>
+    </div>
+    <div class="hint">手机上传的文件落到这里。</div>
+  </div>
+
+  <div class="field">
+    <label for="f-max-size">单文件大小上限</label>
+    <div class="inline-unit">
+      <input type="number" id="f-max-size" min="1">
+      <select id="f-max-unit">
+        <option value="KB">KB</option>
+        <option value="MB">MB</option>
+        <option value="GB" selected>GB</option>
+      </select>
+    </div>
+    <div class="hint">手机上传单文件超出会被拒绝。上限 1 TB。</div>
+  </div>
+
+  <div class="field">
+    <label for="f-prefer-ip">偏好 IP 子网</label>
+    <select id="f-prefer-ip">
+      <option value="">无偏好</option>
+    </select>
+    <div class="hint">多网卡时挑哪个子网的 IP 进 QR 码。</div>
+  </div>
+
+  <div class="field">
+    <label for="f-token">Token</label>
+    <div class="token-row">
+      <input type="text" id="f-token" autocomplete="off" autocorrect="off" spellcheck="false" style="padding-right: 40px;">
+      <button type="button" class="toggle" id="token-toggle">👁</button>
+    </div>
+    <div class="warning">修改 token 后需重启 qrctrl 才生效。重启前旧 token 仍可扫码连接。</div>
+  </div>
+</div>
+
+<div class="actions">
+  <button type="button" class="btn-primary" id="save-btn">保存</button>
+  <a class="btn-secondary" id="back-link">返回控制台</a>
+  <button type="button" class="btn-warning" id="restart-btn">重启 qrctrl</button>
+</div>
+
+<!-- 目录选择模态 -->
+<div class="modal-bg" id="dir-modal">
+  <div class="modal">
+    <div class="modal-header" id="modal-breadcrumb"></div>
+    <div class="modal-body" id="modal-entries"></div>
+    <div class="modal-footer">
+      <div class="modal-current" id="modal-current"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn-small" id="modal-cancel">取消</button>
+        <button type="button" class="btn-small" id="modal-select" style="background:#0071e3;color:#fff;border-color:#0071e3;">选择此目录</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const initialToken = new URLSearchParams(location.search).get('t') || '';
+let currentToken = initialToken;
+let modalCurrentPath = null;
+
+function showToast(msg, ms = 1800) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+function apiUrl(path, params = {}) {
+  const u = new URL(path, location.origin);
+  params.t = currentToken;
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null) u.searchParams.set(k, v);
+  }
+  return u.toString();
+}
+
+async function fetchJson(url, opts) {
+  const res = await fetch(url, opts);
+  if (res.status === 401) {
+    showToast('Token 失效，请从托盘菜单重新打开配置页');
+    throw new Error('unauthorized');
+  }
+  return res;
+}
+
+// 把字节转成 {value, unit}，方便回填表单
+function bytesToUnit(bytes) {
+  if (bytes >= 1024 * 1024 * 1024 && bytes % (1024 * 1024 * 1024) === 0) {
+    return { value: bytes / (1024 * 1024 * 1024), unit: 'GB' };
+  }
+  if (bytes >= 1024 * 1024 && bytes % (1024 * 1024) === 0) {
+    return { value: bytes / (1024 * 1024), unit: 'MB' };
+  }
+  if (bytes >= 1024 && bytes % 1024 === 0) {
+    return { value: bytes / 1024, unit: 'KB' };
+  }
+  return { value: bytes, unit: 'B' };
+}
+
+function unitToBytes(value, unit) {
+  const v = Number(value);
+  if (!Number.isFinite(v) || v <= 0) return 0;
+  switch (unit) {
+    case 'KB': return Math.floor(v * 1024);
+    case 'MB': return Math.floor(v * 1024 * 1024);
+    case 'GB': return Math.floor(v * 1024 * 1024 * 1024);
+    default:   return Math.floor(v);
+  }
+}
+
+async function loadConfig() {
+  try {
+    const res = await fetchJson(apiUrl('/api/config'));
+    const cfg = await res.json();
+    document.getElementById('f-name').value = cfg.name || '';
+    document.getElementById('f-addr').value = cfg.addr || '';
+    document.getElementById('f-port').value = cfg.port || '';
+    document.getElementById('f-save-dir').value = cfg.save_dir || '';
+    const ms = bytesToUnit(cfg.max_size || 0);
+    document.getElementById('f-max-size').value = ms.value;
+    document.getElementById('f-max-unit').value = ms.unit;
+    document.getElementById('f-token').value = cfg.token || '';
+    // prefer_ip 选中（loadLocalIps 已填充选项）
+    const prefSel = document.getElementById('f-prefer-ip');
+    const pref = cfg.prefer_ip || '';
+    if (!pref || [...prefSel.options].some(o => o.value === pref)) {
+      prefSel.value = pref;
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function loadLocalIps(selectedPref) {
+  try {
+    const res = await fetchJson(apiUrl('/api/local_ips'));
+    const ifs = await res.json();
+    const sel = document.getElementById('f-prefer-ip');
+    const cur = selectedPref || sel.value;
+    sel.innerHTML = '<option value="">无偏好</option>';
+    // 列出所有接口（不去重）：网卡名 + IP + CIDR，让用户一眼挑出想要的网卡。
+    // 多个 IP 共享同一 prefer 前缀时它们指向同一个值（前缀过滤），但展示分开便于识别。
+    for (const f of ifs) {
+      const opt = document.createElement('option');
+      opt.value = f.prefer;
+      opt.textContent = `${f.name}  ·  ${f.ip}  (${f.cidr})`;
+      sel.appendChild(opt);
+    }
+    if (cur && [...sel.options].some(o => o.value === cur)) {
+      sel.value = cur;
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// ============= 端口可用性预检 =============
+async function checkPort() {
+  const portEl = document.getElementById('f-port');
+  const hintEl = document.getElementById('port-hint');
+  const addr = document.getElementById('f-addr').value.trim() || '0.0.0.0';
+  const port = portEl.value.trim();
+  if (!port) {
+    portEl.classList.remove('invalid');
+    hintEl.textContent = '留空 = 从 8080 起自动找一个可用端口。';
+    hintEl.style.color = '';
+    return;
+  }
+  try {
+    const res = await fetchJson(apiUrl('/api/check_port', { addr, port }));
+    const data = await res.json();
+    if (data.free) {
+      portEl.classList.remove('invalid');
+      if (data.self) {
+        hintEl.textContent = '当前 qrctrl 正在使用此端口';
+        hintEl.style.color = '#6e6e73';
+      } else {
+        hintEl.textContent = '可用 ✓';
+        hintEl.style.color = '#2cb24a';
+      }
+    } else {
+      portEl.classList.add('invalid');
+      hintEl.textContent = '该端口已被占用或权限不足';
+      hintEl.style.color = '#d33';
+    }
+  } catch (e) { /* 忽略 */ }
+}
+
+// ============= 目录选择模态 =============
+async function openDirPicker() {
+  document.getElementById('dir-modal').classList.add('show');
+  await navigateDir(null);
+}
+
+async function navigateDir(path) {
+  try {
+    const params = {};
+    if (path) params.path = path;
+    const res = await fetchJson(apiUrl('/api/list_dir', params));
+    const data = await res.json();
+    const isRoots = data.is_roots === true;
+
+    // roots 视图下不更新 modalCurrentPath——「选择此目录」按钮也禁用，
+    // 因为 roots 本身不是有效目录。保留上次的具体路径以便用户返回。
+    if (!isRoots) {
+      modalCurrentPath = data.current;
+    }
+    document.getElementById('modal-current').textContent = isRoots ? '此电脑' : data.current;
+    // 选择按钮：roots 视图下禁用
+    document.getElementById('modal-select').disabled = isRoots;
+
+    // 面包屑（类 Finder 风格：用 › 分隔）
+    const bcEl = document.getElementById('modal-breadcrumb');
+    bcEl.innerHTML = '';
+
+    // 分隔符工具：在两个元素之间插一个「 › 」
+    const pushSep = () => {
+      const s = document.createElement('span');
+      s.className = 'sep';
+      s.textContent = ' › ';
+      bcEl.appendChild(s);
+    };
+
+    // 最前的「此电脑」入口（跨平台统一文案）
+    const rootLink = document.createElement('a');
+    rootLink.className = 'root-link';
+    rootLink.textContent = '💻 此电脑';
+    rootLink.onclick = (e) => { e.preventDefault(); navigateDir('roots'); };
+    bcEl.appendChild(rootLink);
+
+    if (!isRoots) {
+      const isWin = data.current.includes('\\') || /^[A-Z]:/i.test(data.current);
+      const sepChar = isWin ? '\\' : '/';
+      const parts = data.current.split(/[\\/]/).filter(Boolean);
+
+      // 逐段构造面包屑。Windows: parts[0] = "D:"，acc 起步 "D:\\"；
+      // Unix: 第一个段是根下的第一级目录，acc 起步 "/<part>"。
+      let acc = isWin ? (parts[0] + '\\') : '';
+      for (let i = 0; i < parts.length; i++) {
+        if (i > 0) {
+          acc = acc.replace(/[\\/]$/, '') + sepChar + parts[i];
+        } else if (!isWin) {
+          acc = '/' + parts[i];
+        }
+        pushSep();
+        const a = document.createElement('a');
+        a.textContent = parts[i];
+        const target = acc;
+        a.onclick = (e) => { e.preventDefault(); navigateDir(target); };
+        bcEl.appendChild(a);
+      }
+    }
+
+    // 条目
+    const bodyEl = document.getElementById('modal-entries');
+    bodyEl.innerHTML = '';
+
+    if (isRoots) {
+      // 列盘符（Windows）或 `/`（Unix）。每个 entry 自带 path 字段。
+      if (data.entries.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'dir-entry empty';
+        empty.textContent = '（未检测到可用盘符）';
+        bodyEl.appendChild(empty);
+      }
+      for (const e of data.entries) {
+        const el = document.createElement('div');
+        el.className = 'dir-entry';
+        el.innerHTML = '<span class="icon">💽</span> ' + e.name;
+        el.onclick = () => navigateDir(e.path);
+        bodyEl.appendChild(el);
+      }
+      return;
+    }
+
+    // 上级目录
+    if (data.parent) {
+      const el = document.createElement('div');
+      el.className = 'dir-entry';
+      el.innerHTML = '<span class="icon">📂</span> ..';
+      el.onclick = () => navigateDir(data.parent);
+      bodyEl.appendChild(el);
+    }
+    if (data.entries.length === 0 && !data.parent) {
+      const empty = document.createElement('div');
+      empty.className = 'dir-entry empty';
+      empty.textContent = '（空）';
+      bodyEl.appendChild(empty);
+    }
+    const isWin = data.current.includes('\\') || /^[A-Z]:/i.test(data.current);
+    const sepChar = isWin ? '\\' : '/';
+    for (const e of data.entries) {
+      const el = document.createElement('div');
+      el.className = 'dir-entry';
+      el.innerHTML = '<span class="icon">📁</span> ' + e.name;
+      el.onclick = () => navigateDir(data.current + sepChar + e.name);
+      bodyEl.appendChild(el);
+    }
+  } catch (e) {
+    showToast('读取目录失败');
+  }
+}
+
+function closeDirPicker() {
+  document.getElementById('dir-modal').classList.remove('show');
+}
+
+function selectDir() {
+  if (modalCurrentPath) {
+    document.getElementById('f-save-dir').value = modalCurrentPath;
+  }
+  closeDirPicker();
+}
+
+// ============= 收集表单 → POST =============
+async function saveConfig() {
+  const portRaw = document.getElementById('f-port').value.trim();
+  const cfg = {
+    name: document.getElementById('f-name').value.trim() || null,
+    addr: document.getElementById('f-addr').value.trim() || null,
+    port: portRaw ? Number(portRaw) : null,
+    save_dir: document.getElementById('f-save-dir').value.trim() || null,
+    max_size: unitToBytes(
+      document.getElementById('f-max-size').value,
+      document.getElementById('f-max-unit').value
+    ),
+    token: document.getElementById('f-token').value.trim() || null,
+    prefer_ip: document.getElementById('f-prefer-ip').value || null,
+  };
+
+  const saveBtn = document.getElementById('save-btn');
+  saveBtn.disabled = true;
+  saveBtn.textContent = '保存中...';
+  try {
+    const res = await fetchJson(apiUrl('/api/config'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      showToast('保存失败：' + (data.error || '未知错误'), 3000);
+      return;
+    }
+    // 所有字段都不 live-apply——只写文件，下次启动才生效。
+    // 不再回 new_token：之前 token 改了会换前端内存里的 currentToken，
+    // 但 state.token 不可变、后端鉴权仍用旧 token，导致后续 fetch 401。
+    // 统一重启生效消除这个 bug。
+    const banner = document.getElementById('banner');
+    banner.innerHTML = '已保存。<strong>请点击「重启 qrctrl」让所有配置（包括 token）生效。</strong>重启前当前会话仍用旧配置工作。';
+    banner.classList.add('show');
+    showToast('已保存，请重启 qrctrl');
+  } catch (e) {
+    showToast('网络错误');
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = '保存';
+  }
+}
+
+// ============= 重启 qrctrl =============
+// 流程：POST /api/restart → server 触发 tray 退出 + 自己 graceful shutdown →
+// main 检测到 restart_flag=true 后 spawn 新进程接管 → 新进程 bind 同端口。
+// fetch 大概率会因为 server 关闭而失败，这是预期内的。
+// 之后轮询 /api/config 直到拿到任何 HTTP 响应（200 或 401）就算服务器回来了：
+// - 200：旧 token 仍有效（用户没改 token 或改了又改回来）→ 自动刷新页面
+// - 401：服务器回来了但旧 token 失效（用户改了 token）→ 提示用托盘菜单重进
+async function restartQrctrl() {
+  if (!confirm('确定要重启 qrctrl 吗？重启期间手机端会短暂断连，此页面也会暂时无响应。')) {
+    return;
+  }
+  const restartBtn = document.getElementById('restart-btn');
+  restartBtn.disabled = true;
+  restartBtn.textContent = '正在重启...';
+
+  const banner = document.getElementById('banner');
+  banner.innerHTML = '<strong>正在重启 qrctrl...</strong>页面将在几秒后自动恢复。';
+  banner.classList.add('show');
+
+  // 发起重启请求（fetch 会因为 server 关闭而失败，预期内）
+  try {
+    await fetch(apiUrl('/api/restart'), { method: 'POST', cache: 'no-store' });
+  } catch (e) {
+    // 预期内：server 关闭导致 fetch 失败
+  }
+
+  // 给老进程退出 + 新进程 spawn + bind 一点时间，再开始轮询
+  await new Promise(r => setTimeout(r, 1200));
+
+  // 轮询上限 30 秒；只要拿到任何 HTTP 响应就说明服务器回来了
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(apiUrl('/api/config'), { cache: 'no-store' });
+      if (res.status === 200) {
+        banner.innerHTML = '<strong>重启完成。</strong>正在刷新页面...';
+        setTimeout(() => location.reload(), 500);
+        return;
+      }
+      if (res.status === 401) {
+        // 服务器回来了但 URL 里的 token 失效（用户改过 token）
+        banner.innerHTML = '<strong>重启完成。</strong>Token 已变更，请通过托盘菜单「配置...」或重新扫码进入配置页。';
+        restartBtn.textContent = '已重启';
+        return;
+      }
+      // 其他状态码不应该出现，继续轮询
+    } catch (e) {
+      // 服务器还没起来，继续等
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  banner.innerHTML = '<strong>重启超时。</strong>30 秒内未检测到 qrctrl 恢复，请检查托盘图标是否存在，或手动重新启动。';
+  restartBtn.disabled = false;
+  restartBtn.textContent = '重启 qrctrl';
+}
+
+// ============= 初始化 =============
+function bindEvents() {
+  document.getElementById('browse-btn').onclick = openDirPicker;
+  document.getElementById('modal-cancel').onclick = closeDirPicker;
+  document.getElementById('modal-select').onclick = selectDir;
+  document.getElementById('save-btn').onclick = saveConfig;
+  document.getElementById('restart-btn').onclick = restartQrctrl;
+  document.getElementById('f-port').addEventListener('blur', checkPort);
+  document.getElementById('f-addr').addEventListener('blur', checkPort);
+  document.getElementById('token-toggle').onclick = () => {
+    const el = document.getElementById('f-token');
+    el.type = el.type === 'password' ? 'text' : 'password';
+  };
+  // 默认隐藏 token
+  document.getElementById('f-token').type = 'password';
+}
+
+window.addEventListener('DOMContentLoaded', async () => {
+  // 返回控制台链接（用初始 token，保存后如改了 token 会被 saveConfig 更新）
+  const backUrl = new URL(location.pathname.replace('/config', '/'), location.origin);
+  backUrl.searchParams.set('t', initialToken);
+  document.getElementById('back-link').href = backUrl.toString();
+
+  bindEvents();
+
+  // 串行：先拉候选 IP 填充下拉框，再拉当前配置回填（确保 prefer_ip 选中状态不丢）
+  await loadLocalIps();
+  await loadConfig();
+});
+</script>
+</body>
+</html>

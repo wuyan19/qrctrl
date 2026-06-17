@@ -112,12 +112,46 @@ By default, qrctrl generates a random token each launch — the QR code changes 
 
 Run `qrctrl --name "<label>"` on each PC. The phone status bar shows `<name> connected` / `<name> disconnected` and toasts include the name (e.g. `written to <name> clipboard`), so you always know which machine you're controlling.
 
+### Browser config page
+
+Double-click launch users have no terminal — but they still need a way to change settings. Open the tray menu → **Settings...** and the system browser opens `<URL>/config?t=<token>` with a form for every parameter:
+
+- **name / addr** — text inputs.
+- **port** — number input with free-port preflight on blur (no more silent crash from a busy 8080 after a reboot).
+- **save_dir** — readonly input + **Browse...** button opening a server-driven directory picker modal (breadcrumb navigation + click-to-descend).
+- **max_size** — number + KB/MB/GB unit selector.
+- **prefer_ip** — dropdown populated from `/api/local_ips`, with a "no preference" option.
+- **token** — text input with show/hide toggle. Changing token invalidates the old scan URL immediately — the page shows the new URL so you can re-scan.
+
+Save → writes to `config.toml` → yellow banner: "Saved. **Restart qrctrl for changes to take effect.**" All changes take effect on restart — qrctrl never tries to live-apply partial edits.
+
+The config file lives at `dirs::config_dir()/qrctrl/config.toml`:
+
+- Windows: `%APPDATA%\qrctrl\config.toml`
+- macOS: `~/Library/Application Support/qrctrl/config.toml`
+- Linux: `~/.config/qrctrl/config.toml`
+
+Schema (all fields optional — missing = let the lower layer's default win):
+
+```toml
+addr = "0.0.0.0"
+port = 8080
+name = "Work Mac"
+save_dir = "/Users/wuyan/Downloads/qrctrl"
+max_size = 10737418240
+token = "abc123def456"
+prefer_ip = "192.168.20"
+```
+
+Config layering: **CLI args > config.toml > built-in defaults**. CLI always wins; passing nothing falls back to config.toml; if config.toml also omits a field, the built-in default applies. A corrupted config.toml is never fatal — qrctrl renames it to `config.toml.bad-{timestamp}` and continues with defaults (a tray app crashing silently on a typo would be the worst possible UX).
+
 ### System tray + background run
 
 Once running, qrctrl lives in the system tray with a menu:
 - **Copy URL** — puts the scan URL on the clipboard for manual sharing.
 - **Show QR** — reopens the QR window if you closed it.
 - **Open save folder** — reveals the phone-upload save folder in the system file manager (Finder / Explorer / xdg-open).
+- **Settings...** — opens the browser config page so double-click launch users (who have no terminal) can still change parameters.
 - **Quit** — triggers graceful shutdown (in-flight uploads finish before exit).
 
 On Windows the release build is a GUI-subsystem binary — double-clicking `qrctrl.exe` from File Explorer launches it silently (no cmd window, no parent terminal to accidentally close). The QR window auto-opens on first launch. From a terminal (PowerShell / cmd) the banner is still printed normally.
@@ -185,6 +219,7 @@ Shipped:
 - [x] System tray + graceful shutdown
 - [x] Background run on Windows (GUI subsystem) and macOS (`.app` bundle with `LSUIElement`)
 - [x] Auto-open QR window on double-click launch
+- [x] Browser config page (tray → Settings... → form for all params → write to config.toml → restart to apply)
 
 Planned for upcoming versions:
 

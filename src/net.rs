@@ -1,6 +1,6 @@
 use std::net::Ipv4Addr;
 
-use local_ip_address::list_afinet_netifas;
+use if_addrs::{IfAddr, Ifv4Addr, Interface};
 
 /// 判断 IPv4 是否「看起来像」真实的局域网地址。
 ///
@@ -72,35 +72,85 @@ fn is_virtual_interface(name: &str) -> bool {
     KEYWORDS.iter().any(|k| lower.contains(k))
 }
 
-/// 列出所有「看起来像」局域网的 IPv4，按地址排序去重。
-///
-/// 优先排除虚拟网卡（WSL / Docker / Hyper-V / VMware / VPN 隧道等，
-/// 靠 `is_virtual_interface` 用接口名识别）；若全部网卡都被识别为虚拟
-/// 网卡，则回退到不过滤，保证用户至少能看到候选 IP。
-pub fn list_local_ipv4s() -> Vec<Ipv4Addr> {
-    let all: Vec<(String, Ipv4Addr)> = list_afinet_netifas()
+/// 局域网接口信息：IP + 掩码 + 接口名。配置页用来展示真实子网。
+#[derive(Clone)]
+pub struct LanInterface {
+    pub name: String,
+    pub ip: Ipv4Addr,
+    pub netmask: Ipv4Addr,
+}
+
+impl LanInterface {
+    /// 掩码中 1 的位数（CIDR 前缀长度）。255.255.255.0 → 24。
+    pub fn prefix_len(&self) -> u8 {
+        self.netmask.octets().iter().map(|b| b.count_ones() as u8).sum()
+    }
+
+    /// 网络地址（IP & 掩码）。192.168.20.175/24 → 192.168.20.0。
+    pub fn network(&self) -> Ipv4Addr {
+        let ip = u32::from(self.ip);
+        let mask = u32::from(self.netmask);
+        Ipv4Addr::from(ip & mask)
+    }
+
+    /// `--prefer-ip` 用的字符串前缀：按 prefix_len 取前 N 段。
+    /// 24 → 取前 3 段（"192.168.20"）；16 → 前 2 段；8 → 前 1 段。
+    /// 不整字节的掩码（如 /22）按 ceil 取段数，仍能匹配该子网下的所有 IP。
+    pub fn prefer_prefix(&self) -> String {
+        let segments = (self.prefix_len() as f32 / 8.0).ceil() as usize;
+        let octets = self.ip.octets();
+        octets
+            .iter()
+            .take(segments.max(1).min(4))
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+}
+
+/// 枚举所有物理（非虚拟）网卡接口的 IPv4 + 掩码。
+/// 如果全部网卡都被识别为虚拟网卡，回退到全部网卡（保证有候选）。
+pub fn list_lan_interfaces() -> Vec<LanInterface> {
+    let all: Vec<LanInterface> = if_addrs::get_if_addrs()
         .map(|interfaces| {
             interfaces
                 .into_iter()
-                .filter_map(|(name, ip)| match ip {
-                    std::net::IpAddr::V4(v4) if is_likely_lan(v4) => Some((name, v4)),
+                .filter_map(|iface: Interface| match iface.addr {
+                    IfAddr::V4(Ifv4Addr { ip, netmask, .. }) if is_likely_lan(ip) => {
+                        Some(LanInterface {
+                            name: iface.name,
+                            ip,
+                            netmask,
+                        })
+                    }
                     _ => None,
                 })
                 .collect()
         })
         .unwrap_or_default();
 
-    let mut physical: Vec<Ipv4Addr> = all
+    let mut physical: Vec<LanInterface> = all
         .iter()
-        .filter(|(name, _)| !is_virtual_interface(name))
-        .map(|(_, ip)| *ip)
+        .filter(|li| !is_virtual_interface(&li.name))
+        .cloned()
         .collect();
     if physical.is_empty() {
-        physical = all.into_iter().map(|(_, ip)| ip).collect();
+        physical = all;
     }
-    physical.sort();
-    physical.dedup();
+    physical.sort_by_key(|li| li.ip);
     physical
+}
+
+/// 列出所有「看起来像」局域网的 IPv4，按地址排序去重。
+///
+/// 优先排除虚拟网卡（WSL / Docker / Hyper-V / VMware / VPN 隧道等，
+/// 靠 `is_virtual_interface` 用接口名识别）；若全部网卡都被识别为虚拟
+/// 网卡，则回退到不过滤，保证用户至少能看到候选 IP。
+pub fn list_local_ipv4s() -> Vec<Ipv4Addr> {
+    list_lan_interfaces()
+        .into_iter()
+        .map(|li| li.ip)
+        .collect()
 }
 
 /// 在候选 IP 中按子网前缀过滤。

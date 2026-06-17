@@ -11,7 +11,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 enigo = "0.6"
 qrcode = "0.14"
 rand = "0.9"
-local-ip-address = "0.6"
+if-addrs = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 arboard = { version = "3", default-features = false, features = ["image-data"] }
@@ -27,6 +27,7 @@ futures-util = "0.3"
 tray-icon = "0.24"
 tao = "0.35"
 softbuffer = "0.4"
+toml = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

@@ -112,12 +112,46 @@ qrctrl -a 127.0.0.1 -p 9000 -n "测试"   # 短参数形式
 
 每台 PC 跑 `qrctrl --name "<标签>"`。手机状态栏显示 `<name> 已连接` / `<name> 已断开`，提示也含名称（如 `已写入 <name> 剪贴板`），始终清楚在控制哪台机器。
 
+### 浏览器配置页
+
+双击启动的用户没有终端——但他们还是需要改参数。打开托盘菜单 → **配置...**，系统浏览器打开 `<URL>/config?t=<token>`，所有参数都在一个表单里：
+
+- **name / addr** — 文本输入框。
+- **port** — 数字输入框，失焦时预检端口可用性（再也不会重启后才发现 8080 被占导致 silent crash）。
+- **save_dir** — 只读输入框 + **浏览...** 按钮，弹出 server-driven 目录选择模态（面包屑导航 + 点击逐层下降）。
+- **max_size** — 数字 + KB/MB/GB 单位选择器。
+- **prefer_ip** — 下拉框，选项来自 `/api/local_ips`，含「无偏好」。
+- **token** — 文本输入框，带显示/隐藏切换。修改后旧扫码 URL 立即失效——页面会显示新 URL 让你重新扫。
+
+保存 → 写入 `config.toml` → 黄色横幅：「已保存。**请重启 qrctrl 让配置生效。**」所有改动重启后生效——qrctrl 不做局部 live-apply。
+
+配置文件位置 `dirs::config_dir()/qrctrl/config.toml`：
+
+- Windows: `%APPDATA%\qrctrl\config.toml`
+- macOS: `~/Library/Application Support/qrctrl/config.toml`
+- Linux: `~/.config/qrctrl/config.toml`
+
+Schema（全部字段可选——没写 = 让下层默认生效）：
+
+```toml
+addr = "0.0.0.0"
+port = 8080
+name = "工作 Mac"
+save_dir = "/Users/wuyan/Downloads/qrctrl"
+max_size = 10737418240
+token = "abc123def456"
+prefer_ip = "192.168.20"
+```
+
+配置三层合并：**CLI 参数 > config.toml > 内置默认**。CLI 永远赢；不传则用 config.toml；config.toml 也没写就用内置默认。损坏的 config.toml 永远不会让程序崩——qrctrl 会把它改名成 `config.toml.bad-{timestamp}` 备份后用 default 继续（tray app 在配置 typo 上静默崩溃是最糟糕的体验）。
+
 ### 系统托盘 + 后台运行
 
 运行时 qrctrl 常驻系统托盘，菜单：
 - **复制 URL** — 把扫码 URL 写入剪贴板，便于手动分享。
 - **显示二维码** — 关掉二维码窗口后重新弹出。
 - **打开文件保存目录** — 在系统文件管理器里打开手机上传文件的保存目录（macOS Finder / Windows 资源管理器 / Linux xdg-open）。
+- **配置...** — 打开浏览器配置页，让双击启动（无终端）的用户也能改参数。
 - **退出** — 触发 graceful shutdown（上传中的文件先完成再退出）。
 
 Windows 下 release 构建是 GUI 子系统二进制——从资源管理器双击 `qrctrl.exe` 静默启动（无 cmd 黑窗，无父终端可误关）。首次启动自动弹出二维码窗口。从终端（PowerShell / cmd）启动时 banner 仍正常打印。
@@ -185,6 +219,7 @@ powershell -ExecutionPolicy Bypass -File scripts\regen-tray-icon.ps1
 - [x] 系统托盘 + graceful shutdown
 - [x] Windows（GUI 子系统）与 macOS（`.app` bundle + `LSUIElement`）后台运行
 - [x] 双击启动自动弹出二维码窗口
+- [x] 浏览器配置页（托盘 → 配置... → 所有参数可编辑 → 写入 config.toml → 重启生效）
 
 未来计划：
 

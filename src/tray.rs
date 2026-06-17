@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use tao::dpi::PhysicalSize;
 use tao::event::{Event, StartCause, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopWindowTarget};
+use tao::event_loop::{ControlFlow, EventLoop, EventLoopWindowTarget};
 use tao::window::{Window, WindowBuilder};
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, EventLoopWindowTargetExtMacOS};
@@ -38,10 +38,13 @@ pub struct TrayState {
     pub auto_show_qr: bool,
 }
 
-enum UserEvent {
+pub enum UserEvent {
     #[allow(dead_code)]
     TrayIconEvent(TrayIconEvent),
     MenuEvent(MenuEvent),
+    /// 配置页「立即重启」按钮发起：server 线程通过 EventLoopProxy 发送，
+    /// tray event loop 收到后通知 server shutdown + 自己 Exit，main 退出后 spawn 新进程。
+    RestartRequested,
 }
 
 // QrWindowState 用 Rc<Window> 让 Context/Surface 都拥有 Window 的引用计数。
@@ -56,11 +59,12 @@ struct QrWindowState {
     pixel_h: u32,
 }
 
-pub fn run_tray_event_loop(state: TrayState, shutdown_notify: Arc<Notify>) {
+pub fn run_tray_event_loop(
+    state: TrayState,
+    shutdown_notify: Arc<Notify>,
     // mut 仅 macOS 需要（set_activation_policy 是 &mut self），其他平台会触发 unused_mut
-    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
-
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))] mut event_loop: EventLoop<UserEvent>,
+) {
     // macOS: 强制 Accessory + 隐藏 Dock。LSUIElement=true 只在 plist 启动阶段生效，
     // tao 的 launched() 会按内部默认（Regular）调 NSApp.setActivationPolicy，
     // 不显式覆盖就会冒出 Dock 图标——右键 Dock Quit 会发 terminate: 杀掉整个托盘进程。
@@ -86,11 +90,13 @@ pub fn run_tray_event_loop(state: TrayState, shutdown_notify: Arc<Notify>) {
     let copy_url_i = MenuItem::new("复制 URL", true, None);
     let show_qr_i = MenuItem::new("显示二维码", true, None);
     let open_save_dir_i = MenuItem::new("打开文件保存目录", true, None);
+    let config_i = MenuItem::new("配置...", true, None);
     let quit_i = MenuItem::new("退出", true, None);
     let _ = menu.append_items(&[
         &copy_url_i,
         &show_qr_i,
         &open_save_dir_i,
+        &config_i,
         &PredefinedMenuItem::separator(),
         &quit_i,
     ]);
@@ -142,10 +148,45 @@ pub fn run_tray_event_loop(state: TrayState, shutdown_notify: Arc<Notify>) {
                 } else if e.id == open_save_dir_i.id() {
                     let save_dir = state.save_dir.clone();
                     std::thread::spawn(move || open_in_file_manager(&save_dir));
+                } else if e.id == config_i.id() {
+                    // 构造配置页 URL：把 state.url 的 `?t=` 前面插入 `/config`
+                    // state.url 形如 http://ip:port/?t=token 或 http://localhost:port/?t=token
+                    let config_url = match state.url.split_once("?t=") {
+                        Some((base, tok)) => {
+                            // base 末尾若是 /，替换成 /config；否则直接补 /config
+                            let trimmed = base.trim_end_matches('/');
+                            format!("{}/config?t={}", trimmed, tok)
+                        }
+                        None => state.url.clone(), // 兜底，理论上不会发生
+                    };
+                    std::thread::spawn(move || open_url_in_browser(&config_url));
                 } else if e.id == quit_i.id() {
                     shutdown_notify.notify_waiters();
                     *control_flow = ControlFlow::Exit;
                 }
+            }
+            Event::UserEvent(UserEvent::RestartRequested) => {
+                // 配置页「立即重启」按钮通过 EventLoopProxy 发来。
+                // tao 的 event_loop.run() 标记为 `-> !`：ControlFlow::Exit 后
+                // Windows 直接 ExitProcess，macOS/Linux 也类似，run() 调用之后
+                // 的 main 代码不会执行——所以 spawn 新进程必须放在这里。
+                //
+                // 时序：spawn 新进程 → notify server shutdown → 本进程 Exit
+                // 新进程启动后会和本进程争端口（本进程 listener 还没 drop），
+                // 通过 QRCTRL_RESTART_CHILD 环境变量让 probe_port 重试几次绑定。
+                let exe = std::env::current_exe()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("qrctrl"));
+                // 沿用本进程的 CLI 参数（--port / --token / --save-dir 等都透传），
+                // 让重启后的进程行为与本进程一致；config.toml 中的改动也会生效。
+                let mut cmd = std::process::Command::new(&exe);
+                cmd.args(std::env::args().skip(1));
+                // env::set_var 在 2024 edition 是 unsafe，改用 Command::env 注入子进程
+                cmd.env("QRCTRL_RESTART_CHILD", "1");
+                if let Err(e) = cmd.spawn() {
+                    eprintln!("[tray] 重启 spawn 失败（{}），请手动启动", e);
+                }
+                shutdown_notify.notify_waiters();
+                *control_flow = ControlFlow::Exit;
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested { .. },
@@ -282,5 +323,39 @@ fn open_in_file_manager(path: &std::path::Path) {
 
     if let Err(e) = std::process::Command::new(program).arg(path).spawn() {
         eprintln!("[tray] 打开 {} 失败: {}", path.display(), e);
+    }
+}
+
+/// 用系统默认浏览器打开 URL。失败只打日志——tray 应用没 UI 兜底。
+/// Windows 用 `cmd /C start "" <url>`：start 的第一个引号字符串当窗口标题，
+/// 没它会把 URL 当文件路径解析；占位 "" 避免这个坑。
+/// 同时设 `CREATE_NO_WINDOW` 避免父进程（windows_subsystem = "windows"）下
+/// spawn 的 cmd 子进程闪一个控制台黑窗。
+fn open_url_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = std::process::Command::new("open").arg(url).spawn() {
+            eprintln!("[tray] 打开 {} 失败: {}", url, e);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW = 0x08000000。父进程是 windows subsystem 时，子进程
+        // 默认会创建一个新的控制台；这个 flag 让 cmd 静默执行后立即退出。
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        if let Err(e) = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+        {
+            eprintln!("[tray] 打开 {} 失败: {}", url, e);
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Err(e) = std::process::Command::new("xdg-open").arg(url).spawn() {
+            eprintln!("[tray] 打开 {} 失败: {}", url, e);
+        }
     }
 }

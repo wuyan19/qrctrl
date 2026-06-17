@@ -3,6 +3,7 @@
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
 mod clipboard;
+mod config;
 mod file_transfer;
 mod inject;
 mod net;
@@ -34,8 +35,8 @@ const REGISTRY_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 #[command(version, about = "qrctrl — 用手机扫码控制 PC")]
 struct Cli {
     /// 监听地址
-    #[arg(short, long, default_value = "0.0.0.0")]
-    addr: String,
+    #[arg(short, long)]
+    addr: Option<String>,
 
     /// 监听端口。不传时从 8080 起按 +1 递增找一个可用端口（最多到 8129），
     /// 适配双击启动但 8080 被占用的场景；显式传 `--port` 时只试这个端口，
@@ -52,8 +53,8 @@ struct Cli {
     save_dir: Option<PathBuf>,
 
     /// 单个文件大小上限（字节，默认 10 GB）
-    #[arg(long, default_value_t = DEFAULT_MAX_SIZE)]
-    max_size: u64,
+    #[arg(long)]
+    max_size: Option<u64>,
 
     /// 固定 token（用于重启后保持扫码 URL 不变，手机端刷新页面即可重连）
     /// 默认每次启动随机生成。提供时必须是 4-64 位 ASCII 字母数字。
@@ -126,36 +127,58 @@ fn resolve_name(cli_name: &Option<String>) -> String {
         .unwrap_or_else(|| "qrctrl".to_string())
 }
 
-/// 解析 save_dir：cli 优先 → 系统下载目录 → 当前目录；末尾加 qrctrl 子目录。
+/// 解析 save_dir：用户/配置文件显式提供 → 原样使用；都没给 → 默认 `<下载目录>/qrctrl`。
+///
+/// 早期版本无条件在末尾 join("qrctrl")，导致每次「保存配置 → 重启」循环都自动多一层
+/// （D:\Share → D:\Share\qrctrl → D:\Share\qrctrl\qrctrl → …）。改成显式提供即原样使用，
+/// 只在没有任何输入时才 fallback 到下载目录 + qrctrl 子目录，行为幂等。
 fn resolve_save_dir(cli_save_dir: Option<PathBuf>) -> PathBuf {
-    let base = cli_save_dir
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(dirs::download_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("qrctrl")
+    if let Some(p) = cli_save_dir.filter(|p| !p.as_os_str().is_empty()) {
+        return p;
+    }
+    dirs::download_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("qrctrl")
 }
 
-/// 探测并绑定端口。
+/// 探测可用端口。bind 成功后立即 drop listener，只返回端口号。
 /// - `requested = Some(p)`：用户显式指定，只试这个端口，失败就 panic。
 /// - `requested = None`：双击启动场景，从 8080 起按 +1 递增试，最多 50 次。
 ///   全失败才 panic。
 ///
-/// 返回 (实际绑定的端口, std::net::TcpListener)。listener 在 main 创建后一路 move
-/// 到 async_main 用 `tokio::net::TcpListener::from_std` 转换，**不重新 bind**——
-/// 避免「探测时可用、绑定时被抢」的 TOCTOU 竞态。
-fn probe_and_bind_port(addr: &str, requested: Option<u16>) -> (u16, std::net::TcpListener) {
+/// 真正的 listener 在 server 线程内用 `tokio::net::TcpListener::bind` 重新绑定——
+/// 因为 std::net::TcpListener 跨线程通过 `from_std` 移交给 tokio 后，在 Windows 上
+/// IOCP 注册路径无法正常 accept（端口 LISTENING 但所有连接 timeout）。macOS / Linux
+/// 无此问题，但代码统一走 tokio bind 路径避免平台分歧。
+/// TOCTOU 风险（探测后被抢）窗口是毫秒级，可接受。
+///
+/// 特例：环境变量 `QRCTRL_RESTART_CHILD=1` 表示本进程是配置页「立即重启」spawn 出来的
+/// 子进程——老进程刚退出但 listener 可能还没完全释放，给最多 ~2 秒重试窗口避免新进程
+/// bind 失败崩溃。其他场景（双击启动 / CLI 启动）保持 fail-fast。
+fn probe_port(addr: &str, requested: Option<u16>) -> u16 {
     const PROBE_RANGE: u16 = 50;
     const DEFAULT_PORT: u16 = 8080;
+    const RESTART_RETRY_MS: u64 = 100;
+    const RESTART_RETRY_MAX: u32 = 20; // 20 × 100ms = 2 秒
+
     let candidates: Vec<u16> = match requested {
         Some(p) => vec![p],
         None => (DEFAULT_PORT..DEFAULT_PORT + PROBE_RANGE).collect(),
     };
+    let is_restart_child = std::env::var("QRCTRL_RESTART_CHILD").is_ok();
+    let attempts = if is_restart_child { RESTART_RETRY_MAX } else { 1 };
+
     let mut last_err: Option<std::io::Error> = None;
-    for &p in &candidates {
-        let bind_addr = format!("{}:{}", addr, p);
-        match std::net::TcpListener::bind(&bind_addr) {
-            Ok(listener) => return (p, listener),
-            Err(e) => last_err = Some(e),
+    for attempt in 0..attempts {
+        for &p in &candidates {
+            let bind_addr = format!("{}:{}", addr, p);
+            match std::net::TcpListener::bind(&bind_addr) {
+                Ok(_) => return p,
+                Err(e) => last_err = Some(e),
+            }
+        }
+        if attempt + 1 < attempts {
+            std::thread::sleep(std::time::Duration::from_millis(RESTART_RETRY_MS));
         }
     }
     match requested {
@@ -184,32 +207,45 @@ fn main() {
 
     let cli = Cli::parse();
 
+    // 三层配置合并：built-in default → config.toml → CLI args（CLI 永远赢）。
+    // config.toml 损坏时 load() 内部已 graceful 降级（rename 备份 + 返回 default），不 panic。
+    let file_cfg = config::load();
+
     let token = match &cli.token {
         Some(t) => {
             token::validate_token(t).unwrap_or_else(|e| panic!("--token 无效：{}", e));
             t.clone()
         }
-        None => token::generate_token(),
+        None => match &file_cfg.token {
+            Some(t) => {
+                token::validate_token(t).unwrap_or_else(|e| panic!("config.toml token 无效：{}", e));
+                t.clone()
+            }
+            None => token::generate_token(),
+        },
     };
-    let name = resolve_name(&cli.name);
+    let name = resolve_name(&cli.name.or(file_cfg.name.clone()));
 
-    // save_dir 在 main 同步阶段创建：托盘菜单「打开文件保存目录」可能在 server
-    // 线程完成 async_main 之前就被点，那时必须保证目录已存在。
-    let save_dir = resolve_save_dir(cli.save_dir.clone());
+    // CLI 优先 → 配置文件 → built-in default（下载目录下的 qrctrl 子目录）
+    let save_dir = resolve_save_dir(cli.save_dir.clone().or(file_cfg.save_dir.clone()));
     std::fs::create_dir_all(&save_dir)
         .unwrap_or_else(|e| panic!("创建 save_dir 失败 {}: {}", save_dir.display(), e));
 
-    // 端口探测 + 绑定（用户没传 --port 时从 8080 起递增找可用端口）。
-    // listener 一路 move 到 async_main，from_std 转换，不重新 bind。
-    let (port, std_listener) = probe_and_bind_port(&cli.addr, cli.port);
-    if cli.port.is_none() && port != 8080 {
+    let addr = cli.addr.clone().or(file_cfg.addr.clone()).unwrap_or_else(|| "0.0.0.0".to_string());
+    let max_size = cli.max_size.or(file_cfg.max_size).unwrap_or(DEFAULT_MAX_SIZE);
+    let prefer_ip = cli.prefer_ip.clone().or(file_cfg.prefer_ip.clone());
+
+    // 端口探测（用户没传 --port 时从 8080 起递增找可用端口）。
+    // 实际 listener 在 server 线程内由 tokio 重新 bind，见上方 probe_port 注释。
+    let port = probe_port(&addr, cli.port.or(file_cfg.port));
+    if cli.port.is_none() && file_cfg.port.is_none() && port != 8080 {
         // 双击启动时无 console，这行只在 CLI 启动可见；QR 码本身已含正确端口
         println!("[qrctrl] 默认端口 8080 被占用，已自动改用 {}", port);
     }
 
     // 收集局域网候选 IP，应用 --prefer-ip 过滤（若提供）
     let all_candidates = net::list_local_ipv4s();
-    let candidates = match &cli.prefer_ip {
+    let candidates = match &prefer_ip {
         Some(p) => net::filter_by_subnet(&all_candidates, p),
         None => all_candidates.clone(),
     };
@@ -222,10 +258,16 @@ fn main() {
     };
 
     // banner 先打印（用 & 借，不 move）
-    print_banner(&name, &url, &candidates, &cli, port, &save_dir);
+    print_banner(&name, &url, &candidates, &addr, max_size, port, &save_dir);
 
-    // shutdown 通知：tray 退出菜单触发 → server graceful shutdown
+    // shutdown 通知：tray 退出菜单 / 配置页「立即重启」都通过它让 server 优雅退出
     let shutdown_notify = Arc::new(Notify::new());
+
+    // event_loop 必须在主线程创建（macOS NSApplication 主线程约束），
+    // 但要先把它的 proxy 派发到 server 线程，restart_handler 才能给 tray 发退出信号。
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut event_loop = tao::event_loop::EventLoopBuilder::<tray::UserEvent>::with_user_event().build();
+    let tray_proxy = event_loop.create_proxy();
 
     // server 跑在子线程：tokio runtime + axum。
     // 主线程必须留给 tao event loop（macOS NSApplication 主线程约束）。
@@ -240,26 +282,32 @@ fn main() {
                 .build()
                 .expect("tokio runtime 初始化失败");
             rt.block_on(async_main(
-                cli,
                 token,
                 server_name,
+                addr,
+                port,
+                prefer_ip,
+                max_size,
                 server_shutdown,
+                tray_proxy,
                 save_dir,
-                std_listener,
             ));
         })
         .expect("server 线程启动失败");
 
-    // 主线程跑 tray 事件循环（阻塞，直到用户选退出）
+    // 主线程跑 tray 事件循环（阻塞，直到用户选退出 / restart 触发）
     let tray_state = TrayState {
         device_name: name,
         url,
         save_dir: tray_save_dir,
         auto_show_qr: !has_console,
     };
-    tray::run_tray_event_loop(tray_state, shutdown_notify.clone());
+    tray::run_tray_event_loop(tray_state, shutdown_notify.clone(), event_loop);
 
-    // tray 退出后等 server 关闭（graceful shutdown）
+    // 注意：tao 的 event_loop.run() 是 `-> !`，ControlFlow::Exit 后 Windows
+    // 直接 ExitProcess，macOS/Linux 也类似，run() 之后的代码不会执行。
+    // 所以「立即重启」的 spawn 新进程逻辑放在 tray::RestartRequested 分支里，
+    // 这里只保留 quit 路径的 graceful shutdown 退出兜底（实际几乎跑不到）。
     println!("[qrctrl] 正在退出...");
     if server_handle.join().is_err() {
         eprintln!("[qrctrl] server 线程 panic，强制退出");
@@ -268,13 +316,25 @@ fn main() {
 }
 
 async fn async_main(
-    cli: Cli,
     token: String,
     name: String,
+    addr: String,
+    port: u16,
+    prefer_ip: Option<String>,
+    max_size: u64,
     shutdown_notify: Arc<Notify>,
+    tray_proxy: tao::event_loop::EventLoopProxy<tray::UserEvent>,
     save_dir: PathBuf,
-    listener: std::net::TcpListener,
 ) {
+    // listener 在 server 线程内由 tokio 直接 bind（不走 main → from_std 路径，
+    // 因为 Windows IOCP 下跨线程 from_std 不能正常 accept）。main 阶段已用
+    // probe_port 同步探测过，这里重新 bind 仅在 TOCTOU 极端情况下才会失败。
+    // 必须在构造 AppState 前 bind：addr 后续会 move 进 state。
+    let bind_addr = format!("{}:{}", addr, port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .unwrap_or_else(|e| panic!("端口 {} 绑定失败：{}", bind_addr, e));
+
     let enigo = Enigo::new(&Settings::default()).expect("Enigo 初始化失败");
     let cb = clipboard::new_handle().expect("剪贴板初始化失败");
     // save_dir 由 main 同步创建，这里无需重复
@@ -293,11 +353,16 @@ async fn async_main(
     let state = AppState {
         token: token.clone(),
         name: name.clone(),
+        addr,
+        port,
+        prefer_ip,
         enigo: Arc::new(Mutex::new(enigo)),
         clipboard: cb,
         save_dir: save_dir.clone(),
-        max_size: cli.max_size,
+        max_size,
         registry,
+        shutdown_notify: shutdown_notify.clone(),
+        tray_proxy,
     };
 
     let app = Router::new()
@@ -305,14 +370,16 @@ async fn async_main(
         .route("/ws", get(ws::ws_handler))
         .route("/upload/{id}", post(file_transfer::upload_handler))
         .route("/download/{id}", get(file_transfer::download_handler))
+        .route("/config", get(config::config_page_handler))
+        .route("/api/config", get(config::get_config_handler).post(config::set_config_handler))
+        .route("/api/list_dir", get(config::list_dir_handler))
+        .route("/api/local_ips", get(config::local_ips_handler))
+        .route("/api/check_port", get(config::check_port_handler))
+        .route("/api/restart", post(config::restart_handler))
         .with_state(state);
 
-    // listener 在 main 里通过 probe_and_bind_port 同步绑定，这里转 tokio（自动设非阻塞）。
-    // 不重新 bind 是为了避免「探测可用、绑定时被抢」的 TOCTOU 竞态。
-    let listener = tokio::net::TcpListener::from_std(listener)
-        .expect("std TcpListener 转 tokio 失败");
-
     // graceful shutdown：tray 退出菜单触发 notify，server 收到信号后优雅关闭
+    // restart_handler 也通过同一个 notify 让 server 跟着退出
     let shutdown_signal = async move {
         shutdown_notify.notified().await;
     };
@@ -327,7 +394,8 @@ fn print_banner(
     name: &str,
     url: &str,
     candidates: &[Ipv4Addr],
-    cli: &Cli,
+    addr: &str,
+    max_size: u64,
     port: u16,
     save_dir: &std::path::Path,
 ) {
@@ -336,7 +404,7 @@ fn print_banner(
     println!(" qrctrl 已启动 · 设备名：{}", name);
     println!("--------------------------------------------");
     println!(" 文件保存目录：{}", save_dir.display());
-    println!(" 单文件上限：{} 字节", cli.max_size);
+    println!(" 单文件上限：{} 字节", max_size);
     println!("--------------------------------------------");
     println!(" 手机扫码连接（相机/微信扫一扫）：");
     println!();
@@ -353,5 +421,5 @@ fn print_banner(
         }
     }
     println!("============================================");
-    println!("\n监听 {}:{}，托盘图标常驻，菜单选择退出\n", cli.addr, port);
+    println!("\n监听 {}:{}，托盘图标常驻，菜单选择退出\n", addr, port);
 }
