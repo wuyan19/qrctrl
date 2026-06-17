@@ -415,7 +415,13 @@ fn file_list_json(files: Vec<serde_json::Value>) -> String {
 }
 
 fn server_info_json(name: &str) -> String {
-    serde_json::json!({"type": "server_info", "name": name}).to_string()
+    // version 用 env! 编译期内联 Cargo.toml 的 package.version，前端拿来做「当前版本」展示。
+    serde_json::json!({
+        "type": "server_info",
+        "name": name,
+        "version": env!("CARGO_PKG_VERSION"),
+    })
+    .to_string()
 }
 
 #[cfg(test)]

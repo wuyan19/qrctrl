@@ -226,6 +226,7 @@ fn open_qr_window(
             .with_title("扫描连接 qrctrl")
             .with_inner_size(PhysicalSize::new(pixel_w, pixel_h))
             .with_resizable(false)
+            .with_window_icon(load_window_icon())
             .build(target)
             .map_err(|e| format!("window build: {}", e))?,
     );
@@ -308,6 +309,18 @@ fn load_icon() -> tray_icon::Icon {
     let (w, h) = img.dimensions();
     let rgba = img.into_raw();
     tray_icon::Icon::from_rgba(rgba, w, h).expect("icon from rgba")
+}
+
+/// QR 弹窗的窗口图标 + 任务栏图标。返回 Option 是为了解码失败时让窗口仍能创建——
+/// `WindowBuilder::with_window_icon(None)` 是合法值（tao 会回退到默认图标）。
+/// 实践中 `assets/icon.png` 由我们控制，不会失败；用 expect 会让 tray 应用在
+/// 双击启动（无 console）下 silent crash，不可接受。
+fn load_window_icon() -> Option<tao::window::Icon> {
+    let bytes = include_bytes!("../assets/icon.png");
+    let img = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    let rgba = img.into_raw();
+    tao::window::Icon::from_rgba(rgba, w, h).ok()
 }
 
 /// 在系统文件管理器里打开 path。失败只打日志，不弹错误（tray 应用没 UI 兜底，

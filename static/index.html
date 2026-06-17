@@ -81,6 +81,12 @@
     font-weight: 600;
     text-align: center;
   }
+  .help-version {
+    text-align: center;
+    font-size: 12px;
+    color: #86868b;
+    margin-top: -6px;
+  }
   .help-content {
     overflow-y: auto;
     font-size: 14px;
@@ -496,20 +502,29 @@
 <div id="help-modal" class="modal">
   <div class="help-card">
     <div class="help-title">使用说明</div>
+    <div class="help-version" id="help-version"></div>
     <div class="help-content">
       <h3>连接</h3>
-      <p>PC 启动后会显示二维码。用手机系统相机或微信「扫一扫」扫描，浏览器自动打开本页面。</p>
-      <h3>主要功能</h3>
-      <p><b>文本注入</b>：手机输入的文字（含语音输入）会实时显示在 PC 当前焦点窗口。Enter 换行，点「发送」按钮提交。</p>
-      <p><b>双向剪贴板</b>：拉文本 / 拉图片 把 PC 剪贴板内容取到手机；选图上传 / 粘贴截图 把手机图片写入 PC 剪贴板。</p>
-      <p><b>双向文件</b>：📎 拉文件 下载 PC 剪贴板里复制的文件；📁 发送文件 把手机文件传到 PC 下载目录。</p>
-      <p><b>按键注入</b>：⏎ Enter / ⇥ Tab / ⌫ Backspace 直接发送到 PC 焦点窗口。</p>
+      <p>PC 启动后会显示二维码——双击启动自动弹出二维码窗口，命令行启动则在终端里打印。用手机系统相机或微信「扫一扫」扫描，浏览器自动打开本页面。</p>
+      <h3>文本注入</h3>
+      <p>在输入框输入文字（含语音输入）。开启「⚡ 自动发送」后停顿 600ms 自动提交；也可手动点「发送」或按 Enter。文字会注入到 PC 当前焦点窗口，无需切换输入法，中文 / emoji 直接出字。</p>
+      <h3>剪贴板同步</h3>
+      <p><b>📋 拉文本</b>：把 PC 剪贴板的文本取到手机。</p>
+      <p><b>🖼 拉图片</b>：把 PC 剪贴板的图片取到手机预览，长按可保存到相册。</p>
+      <p><b>📷 推图片</b>：选手机相册图片或粘贴截图，写入 PC 剪贴板。</p>
+      <h3>文件传输</h3>
+      <p><b>📎 拉文件</b>：下载 PC 剪贴板里复制的文件（Finder / 资源管理器里 Cmd+C / Ctrl+C 复制的文件）。</p>
+      <p><b>📁 发送文件</b>：把手机文件传到 PC 的文件保存目录（默认下载目录下的 qrctrl 子目录，可在 PC 托盘菜单 →「配置...」中修改）。</p>
+      <h3>鼠标触控板</h3>
+      <p>点 🖱 触控板 进入鼠标控制：拖动移动指针，轻点左键，双击后按住拖动；底部按钮支持滚动、左右键、复制 / 粘贴快捷键。</p>
+      <h3>配置</h3>
+      <p>PC 端托盘菜单 →「配置...」打开浏览器配置页，可修改监听端口、设备名、文件保存目录、IP 偏好等参数，保存后重启生效。</p>
       <h3>权限</h3>
       <p>macOS 首次启动需授予「辅助功能」权限（系统设置 → 隐私与安全性）。Windows / Linux 无需特殊权限。</p>
       <h3>安全</h3>
-      <p>仅本机局域网通信，每次启动随机生成 token 鉴权。关闭 PC 程序即断开所有连接。</p>
+      <p>仅本机局域网通信，每次启动随机生成 token 鉴权（除非配置了固定 token）。关闭 PC 程序即断开所有连接。</p>
       <h3>排错</h3>
-      <p>PC 的 IP 变化后需重新扫码。中文输入法无需切换，直接出字。断线会自动重连。</p>
+      <p>PC 的 IP 变化后需重新扫码。断线会自动重连（指数退避，最长 10 秒）。</p>
     </div>
     <button id="help-close">关闭</button>
   </div>
@@ -647,6 +662,9 @@ function connect() {
     switch (m.type) {
       case 'server_info':
         deviceName = m.name || 'PC';
+        if (m.version) {
+          document.getElementById('help-version').textContent = 'v' + m.version;
+        }
         setStatus(`${deviceName} 已连接`, true);
         break;
       case 'ok':

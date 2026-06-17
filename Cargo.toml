@@ -36,6 +36,13 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Console",
 ] }
 
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
+
+[dev-dependencies]
+ico = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 [profile.release]
 opt-level = "z"
 lto = true
