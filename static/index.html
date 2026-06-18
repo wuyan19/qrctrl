@@ -623,8 +623,8 @@
     border: 1px solid var(--border);
     border-radius: 4px;
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    align-items: flex-start;
+    gap: 10px;
     cursor: pointer;
     text-align: left;
     background: var(--bg-elev);
@@ -636,7 +636,42 @@
     border-color: var(--border-amber);
     background: var(--panel-hi);
   }
-  .file-list-item:active { background: var(--panel-hi); }
+  .file-list-item.selected {
+    border-color: var(--amber);
+    background: var(--amber-soft);
+  }
+  .file-list-item .check {
+    width: 18px;
+    height: 18px;
+    border: 1.5px solid var(--border-hi);
+    border-radius: 3px;
+    flex-shrink: 0;
+    margin-top: 1px;
+    position: relative;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .file-list-item.selected .check {
+    background: var(--amber);
+    border-color: var(--amber);
+  }
+  .file-list-item.selected .check::after {
+    content: '';
+    position: absolute;
+    left: 5px;
+    top: 1px;
+    width: 4px;
+    height: 9px;
+    border: solid var(--bg);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+  .file-list-item .info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
   .file-list-item .name {
     font-weight: 500;
     color: var(--ink);
@@ -1003,6 +1038,7 @@
     <div class="file-list-items" id="file-list-items"></div>
     <div class="file-list-actions">
       <button id="file-list-download-all">全部下载</button>
+      <button id="file-list-download" disabled>下载</button>
       <button id="file-list-close">取消</button>
     </div>
   </div>
@@ -1096,8 +1132,10 @@ const fileListModal = document.getElementById('file-list-modal');
 const fileListItems = document.getElementById('file-list-items');
 const fileListClose = document.getElementById('file-list-close');
 const fileListDownloadAll = document.getElementById('file-list-download-all');
-// picker 当前显示的文件列表缓存,「全部下载」按钮要用
+const fileListDownload = document.getElementById('file-list-download');
+// picker 当前显示的文件列表缓存 + 选中索引集合
 let fileListCurrent = [];
+let fileListSelected = new Set();
 const toolPanel = document.getElementById('tool-panel');
 const btnTools = document.getElementById('btn-tools');
 const btnEnter = document.getElementById('btn-enter');
@@ -1697,18 +1735,32 @@ function escapeHtml(s) {
 
 function showFilePicker(files) {
   fileListCurrent = files;
+  fileListSelected.clear();
+  updateDownloadButton();
   fileListItems.innerHTML = '';
-  files.forEach((f) => {
+  files.forEach((f, i) => {
     const item = document.createElement('div');
     item.className = 'file-list-item';
-    item.innerHTML = `<div class="name">${escapeHtml(f.name)}</div><div class="meta">${escapeHtml(formatSize(f.size))} · ${escapeHtml(f.mime || '')}</div>`;
+    item.innerHTML = `<div class="check"></div><div class="info"><div class="name">${escapeHtml(f.name)}</div><div class="meta">${escapeHtml(formatSize(f.size))} · ${escapeHtml(f.mime || '')}</div></div>`;
     item.addEventListener('click', () => {
-      hideFilePicker();
-      onFileMeta(f);
+      if (fileListSelected.has(i)) {
+        fileListSelected.delete(i);
+        item.classList.remove('selected');
+      } else {
+        fileListSelected.add(i);
+        item.classList.add('selected');
+      }
+      updateDownloadButton();
     });
     fileListItems.appendChild(item);
   });
   fileListModal.classList.add('show');
+}
+
+function updateDownloadButton() {
+  const n = fileListSelected.size;
+  fileListDownload.textContent = n > 0 ? `下载 ${n}` : '下载';
+  fileListDownload.disabled = n === 0;
 }
 
 // 「全部下载」:浏览器对连续程序性下载有限制(iOS Safari 尤其严),用 250ms stagger
@@ -1717,6 +1769,16 @@ fileListDownloadAll.addEventListener('click', () => {
   const files = fileListCurrent;
   hideFilePicker();
   files.forEach((f, i) => {
+    setTimeout(() => onFileMeta(f), i * 250);
+  });
+});
+
+// 「下载 N」:只下载选中的文件,同样 250ms stagger。
+fileListDownload.addEventListener('click', () => {
+  const selected = [...fileListSelected].sort((a, b) => a - b).map((i) => fileListCurrent[i]);
+  if (selected.length === 0) return;
+  hideFilePicker();
+  selected.forEach((f, i) => {
     setTimeout(() => onFileMeta(f), i * 250);
   });
 });
@@ -1738,6 +1800,9 @@ sendFileBtn.addEventListener('click', () => fileSend.click());
 fileSend.addEventListener('change', () => {
   const files = fileSend.files;
   if (!files || files.length === 0) return;
+  // ⚠️ 必须先快照再清空 input.value。FileList 是 live 引用,清空 input.value 后
+  //    FileList 也被清空,后续 for...of 会迭代 0 次 → 上传根本不启动。
+  const snapshot = Array.from(files);
   fileSend.value = '';
   // 批量入队。新批次(队列空 + 没有在传)→ 计数从 0 起;追加到进行中的批次 → 计数累加。
   const wasIdle = uploadQueue.length === 0 && !uploadCurrent && !currentUploadXHR;
@@ -1746,7 +1811,7 @@ fileSend.addEventListener('change', () => {
     uploadTotalBytes = 0;
     uploadTotalCount = 0;
   }
-  for (const f of files) {
+  for (const f of snapshot) {
     uploadQueue.push(f);
     uploadTotalBytes += f.size;
     uploadTotalCount += 1;
