@@ -38,6 +38,12 @@ pub struct Config {
     /// 与其他字段不同：theme 走 live-apply（POST /api/theme 立即改 state + 写文件），
     /// 因为切换主题不该要求用户重启——重启语义是给「真正影响 server 启动」的字段用的。
     pub theme: Option<String>,
+
+    /// 触控板灵敏度倍数（默认 1.0）。后端 ws dispatch 收到 mouse_move 时
+    /// 把 dx/dy 乘以该值再注入 enigo，前端完全不感知。
+    /// 同 theme 一样走 live-apply（POST /api/mouse_sensitivity）：改 state + 写文件，
+    /// 不需要重启。范围 0.1-5.0，过低触控板太肉、过高难以精准点击。
+    pub mouse_sensitivity: Option<f32>,
 }
 
 /// 返回配置文件路径。`dirs::config_dir()` 在某些嵌入式环境可能返回 None，做兜底。
@@ -125,6 +131,11 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             return Err("theme 必须是 dark / light / system".into());
         }
     }
+    if let Some(s) = cfg.mouse_sensitivity {
+        if !s.is_finite() || s < 0.1 || s > 5.0 {
+            return Err("mouse_sensitivity 必须是 0.1-5.0 之间的有限数".into());
+        }
+    }
     Ok(())
 }
 
@@ -178,6 +189,7 @@ pub async fn get_config_handler(
         "token": state.token,
         "prefer_ip": state.prefer_ip,
         "theme": *state.theme.lock().unwrap(),
+        "mouse_sensitivity": *state.mouse_sensitivity.lock().unwrap(),
     })))
 }
 
@@ -257,6 +269,53 @@ pub async fn set_theme_handler(
             .into_response();
     }
     Json(json!({"ok": true, "theme": theme})).into_response()
+}
+
+/// `POST /api/mouse_sensitivity?t=<token>` body=`{"mouse_sensitivity": 1.5}` → live apply + 持久化。
+///
+/// 与 theme 同模式：改 state.mouse_sensitivity（ws dispatch MouseMove 时乘以该值），
+/// 同时 load → 覆盖字段 → save 持久化，保留文件里其他字段。
+///
+/// 之所以 live-apply 而不是走标准 /api/config 重启路径：灵敏度是触控板手感偏好，
+/// 调一次要求重启会让用户反复试值时极其烦躁。前端 range slider onchange 触发即可。
+pub async fn set_mouse_sensitivity_handler(
+    State(state): State<AppState>,
+    Query(q): Query<TokenQuery>,
+    Json(payload): Json<serde_json::Value>,
+) -> Response {
+    use axum::http::StatusCode;
+    if q.t != state.token {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let raw = match payload.get("mouse_sensitivity").and_then(|v| v.as_f64()) {
+        Some(v) => v,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "缺少 mouse_sensitivity 字段或不是数字"})),
+            )
+                .into_response();
+        }
+    };
+    if !raw.is_finite() || raw < 0.1 || raw > 5.0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "mouse_sensitivity 必须是 0.1-5.0 之间的有限数"})),
+        )
+            .into_response();
+    }
+    let sens = raw as f32;
+    *state.mouse_sensitivity.lock().unwrap() = sens;
+    let mut cfg = load();
+    cfg.mouse_sensitivity = Some(sens);
+    if let Err(e) = save(&cfg) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": format!("写入失败：{}", e)})),
+        )
+            .into_response();
+    }
+    Json(json!({"ok": true, "mouse_sensitivity": sens})).into_response()
 }
 
 #[derive(Deserialize)]

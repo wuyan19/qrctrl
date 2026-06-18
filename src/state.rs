@@ -37,4 +37,8 @@ pub struct AppState {
     /// 后立即改这个值，所有后续 ws server_info 推送都会带新 theme。其他配置字段都不需要
     /// 运行时可变（改了也只写文件、等重启生效）。
     pub theme: Arc<Mutex<String>>,
+    /// 触控板灵敏度倍数（默认 1.0）。ws dispatch MouseMove 时把 dx/dy 乘以该值再注入 enigo。
+    /// 同 theme 走 live-apply：前端配置页 range slider onchange POST /api/mouse_sensitivity
+    /// 立即改这里，下一次 mouse_move 就用新值。
+    pub mouse_sensitivity: Arc<Mutex<f32>>,
 }

@@ -237,6 +237,8 @@ fn main() {
     // 主题：config.toml 显式给出 → 用之；都没有 → "system"（前端按 prefers-color-scheme 决定）。
     // CLI 不暴露 theme 参数——这是 UI 偏好而非启动配置，CLI 化没意义。
     let theme = file_cfg.theme.clone().unwrap_or_else(|| "system".to_string());
+    // 触控板灵敏度：同 theme 是 UI 偏好，CLI 不暴露。config.toml 给值即用，否则默认 1.0。
+    let mouse_sensitivity = file_cfg.mouse_sensitivity.unwrap_or(1.0);
 
     // 端口探测（用户没传 --port 时从 8080 起递增找可用端口）。
     // 实际 listener 在 server 线程内由 tokio 重新 bind，见上方 probe_port 注释。
@@ -292,6 +294,7 @@ fn main() {
                 prefer_ip,
                 max_size,
                 theme,
+                mouse_sensitivity,
                 server_shutdown,
                 tray_proxy,
                 save_dir,
@@ -326,11 +329,28 @@ fn main() {
 /// 解析成 dark/light 应用到 `<html>`，避免 CSS 应用后的 FOUC。
 async fn index_handler(State(state): State<AppState>) -> Html<String> {
     let theme = state.theme.lock().unwrap().clone();
-    let html = INDEX_HTML.replace(
-        "data-theme=\"__THEME__\"",
-        &format!("data-theme=\"{}\"", theme),
-    );
+    let name = escape_html(&state.name);
+    let html = INDEX_HTML
+        .replace(
+            "data-theme=\"__THEME__\"",
+            &format!("data-theme=\"{}\"", theme),
+        )
+        .replace(
+            "<title>__DEVICE_NAME__</title>",
+            &format!("<title>{}</title>", name),
+        );
     Html(html)
+}
+
+/// 把设备名里的 HTML 元字符转义，避免 `<title>` 注入。设备名来自 CLI / config.toml /
+/// hostname，CLI 和文件来源没有限制字符集，所以这条 escape 是必要的（虽然 hostname 几乎
+/// 不会含这些字符）。theme 字段已过 `normalize_theme` 校验只能是三个固定字符串，无需 escape。
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 async fn async_main(
@@ -341,6 +361,7 @@ async fn async_main(
     prefer_ip: Option<String>,
     max_size: u64,
     theme: String,
+    mouse_sensitivity: f32,
     shutdown_notify: Arc<Notify>,
     tray_proxy: tao::event_loop::EventLoopProxy<tray::UserEvent>,
     save_dir: PathBuf,
@@ -383,6 +404,7 @@ async fn async_main(
         shutdown_notify: shutdown_notify.clone(),
         tray_proxy,
         theme: Arc::new(Mutex::new(theme)),
+        mouse_sensitivity: Arc::new(Mutex::new(mouse_sensitivity)),
     };
 
     let app = Router::new()
@@ -393,6 +415,7 @@ async fn async_main(
         .route("/config", get(config::config_page_handler))
         .route("/api/config", get(config::get_config_handler).post(config::set_config_handler))
         .route("/api/theme", post(config::set_theme_handler))
+        .route("/api/mouse_sensitivity", post(config::set_mouse_sensitivity_handler))
         .route("/api/list_dir", get(config::list_dir_handler))
         .route("/api/local_ips", get(config::local_ips_handler))
         .route("/api/check_port", get(config::check_port_handler))

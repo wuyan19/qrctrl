@@ -213,7 +213,12 @@ async fn dispatch(state: &AppState, raw: &str) -> String {
         Command::Backspace => inject_key_cmd(&state.enigo, enigo::Key::Backspace).await,
         Command::Copy => inject_copy_cmd(&state.enigo).await,
         Command::Paste => inject_paste_cmd(&state.enigo).await,
-        Command::MouseMove { dx, dy } => inject_mouse_move_cmd(&state.enigo, dx, dy).await,
+        Command::MouseMove { dx, dy } => {
+            // 后端乘灵敏度系数：前端完全不感知，state.mouse_sensitivity 改了立即生效。
+            // 不 clamp：dx/dy 是手机端相对位移（几像素到几十像素），即使 ×5.0 也远不到 i32 边界。
+            let s = *state.mouse_sensitivity.lock().unwrap();
+            inject_mouse_move_cmd(&state.enigo, (dx as f32 * s) as i32, (dy as f32 * s) as i32).await
+        }
         Command::MouseClick { button } => {
             let btn = button.into();
             inject_mouse_button_cmd(&state.enigo, btn).await

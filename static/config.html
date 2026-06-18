@@ -717,6 +717,21 @@
   </div>
 </div>
 
+<!-- ============ 输入 ============ -->
+<div class="section">
+  <div class="section-title">Input</div>
+  <div class="section-body">
+    <div class="field">
+      <label for="f-mouse-sens">mouse_sensitivity</label>
+      <div class="inline-unit">
+        <input type="range" id="f-mouse-sens" min="0.1" max="5.0" step="0.1" value="1.0">
+        <output id="f-mouse-sens-val" for="f-mouse-sens">1.0×</output>
+      </div>
+      <div class="hint">触控板拖动距离的乘数（0.1–5.0，默认 1.0）。松开滑块立即生效，无需重启。</div>
+    </div>
+  </div>
+</div>
+
 <div class="actions">
   <button type="button" class="btn-primary" id="save-btn">保存</button>
   <a class="btn-secondary" id="back-link">← 返回控制台</a>
@@ -812,6 +827,10 @@ async function loadConfig() {
     document.getElementById('f-max-size').value = ms.value;
     document.getElementById('f-max-unit').value = ms.unit;
     document.getElementById('f-token').value = cfg.token || '';
+    // mouse_sensitivity：clamp 到 [0.1, 5.0]，缺失时默认 1.0
+    const sens = Math.min(5.0, Math.max(0.1, Number(cfg.mouse_sensitivity) || 1.0));
+    document.getElementById('f-mouse-sens').value = sens;
+    document.getElementById('f-mouse-sens-val').textContent = sens.toFixed(1) + '×';
     // prefer_ip 选中（loadLocalIps 已填充选项）
     const prefSel = document.getElementById('f-prefer-ip');
     const pref = cfg.prefer_ip || '';
@@ -1040,6 +1059,9 @@ async function saveConfig() {
     ),
     token: document.getElementById('f-token').value.trim() || null,
     prefer_ip: document.getElementById('f-prefer-ip').value || null,
+    // 灵敏度已通过 /api/mouse_sensitivity live-apply 写过文件，这里只是带着避免
+    // set_config_handler 的 save(&payload) 把 None 写回成缺失字段（会擦掉之前 live-apply 的值）
+    mouse_sensitivity: Number(document.getElementById('f-mouse-sens').value),
   };
 
   const saveBtn = document.getElementById('save-btn');
@@ -1138,6 +1160,36 @@ function bindEvents() {
   document.getElementById('restart-btn').onclick = restartQrctrl;
   document.getElementById('f-port').addEventListener('blur', checkPort);
   document.getElementById('f-addr').addEventListener('blur', checkPort);
+
+  // 灵敏度滑块：input 时实时更新数值显示，change（松开）时 POST 后端 live-apply
+  const sensEl = document.getElementById('f-mouse-sens');
+  const sensVal = document.getElementById('f-mouse-sens-val');
+  sensEl.addEventListener('input', () => {
+    sensVal.textContent = Number(sensEl.value).toFixed(1) + '×';
+  });
+  sensEl.addEventListener('change', setMouseSensitivity);
+}
+
+// 触控板灵敏度 live-apply：直接 POST /api/mouse_sensitivity，后端立即改 state + 写文件。
+// 不走 saveConfig 路径——那条路径所有字段都要重启生效，灵敏度不需要。
+async function setMouseSensitivity() {
+  const v = Number(document.getElementById('f-mouse-sens').value);
+  try {
+    const res = await fetchJson(apiUrl('/api/mouse_sensitivity'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mouse_sensitivity: v }),
+    });
+    const r = await res.json();
+    if (!r.ok) {
+      showToast('保存失败：' + (r.error || '未知错误'));
+      // 失败时回滚到后端当前值
+      await loadConfig();
+    }
+  } catch (e) {
+    showToast('网络错误：' + e.message);
+  }
+}
   document.getElementById('token-toggle').onclick = () => {
     const el = document.getElementById('f-token');
     el.type = el.type === 'password' ? 'text' : 'password';
