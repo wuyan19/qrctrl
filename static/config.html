@@ -305,9 +305,74 @@
   .inline-unit {
     display: flex;
     gap: 8px;
+    align-items: center;
   }
   .inline-unit input { flex: 1; min-width: 0; }
   .inline-unit select { flex: 0 0 auto; width: auto; min-width: 80px; }
+
+  /* 灵敏度滑块: phosphor terminal 风格 — 细线 track + 琥珀方块 knob + glow */
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    flex: 1;
+    min-width: 0;
+    height: 16px;
+    background: transparent;
+    cursor: pointer;
+    padding: 0;
+    margin: 0;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 2px;
+    background: var(--border-hi);
+    border-radius: 1px;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    margin-top: -7px;
+    width: 16px;
+    height: 16px;
+    background: var(--amber);
+    border: none;
+    border-radius: 2px;
+    box-shadow: 0 0 8px var(--amber-glow);
+    transition: background 0.12s, box-shadow 0.12s;
+  }
+  input[type="range"]:hover::-webkit-slider-thumb {
+    background: var(--amber-hi);
+    box-shadow: 0 0 12px var(--amber-glow);
+  }
+  input[type="range"]:active::-webkit-slider-thumb {
+    background: var(--amber-hi);
+  }
+  input[type="range"]::-moz-range-track {
+    height: 2px;
+    background: var(--border-hi);
+    border-radius: 1px;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: var(--amber);
+    border: none;
+    border-radius: 2px;
+    box-shadow: 0 0 8px var(--amber-glow);
+  }
+  input[type="range"]:hover::-moz-range-thumb {
+    background: var(--amber-hi);
+    box-shadow: 0 0 12px var(--amber-glow);
+  }
+  /* 数值显示: monospace + 琥珀 + 固定宽度避免拖动时布局跳动 */
+  .inline-unit output {
+    flex: 0 0 auto;
+    min-width: 48px;
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--amber);
+    letter-spacing: 0.04em;
+  }
 
   .btn-small {
     padding: 10px 14px;
@@ -734,7 +799,7 @@
 
 <div class="actions">
   <button type="button" class="btn-primary" id="save-btn">保存</button>
-  <a class="btn-secondary" id="back-link">← 返回控制台</a>
+  <a class="btn-secondary" id="back-link">返回控制台</a>
   <button type="button" class="btn-warning" id="restart-btn">重启 qrctrl</button>
 </div>
 
@@ -1168,6 +1233,13 @@ function bindEvents() {
     sensVal.textContent = Number(sensEl.value).toFixed(1) + '×';
   });
   sensEl.addEventListener('change', setMouseSensitivity);
+
+  document.getElementById('token-toggle').onclick = () => {
+    const el = document.getElementById('f-token');
+    el.type = el.type === 'password' ? 'text' : 'password';
+  };
+  // 默认隐藏 token
+  document.getElementById('f-token').type = 'password';
 }
 
 // 触控板灵敏度 live-apply：直接 POST /api/mouse_sensitivity，后端立即改 state + 写文件。
@@ -1189,13 +1261,6 @@ async function setMouseSensitivity() {
   } catch (e) {
     showToast('网络错误：' + e.message);
   }
-}
-  document.getElementById('token-toggle').onclick = () => {
-    const el = document.getElementById('f-token');
-    el.type = el.type === 'password' ? 'text' : 'password';
-  };
-  // 默认隐藏 token
-  document.getElementById('f-token').type = 'password';
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
