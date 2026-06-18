@@ -650,17 +650,29 @@
     font-size: 11px;
     letter-spacing: 0.04em;
   }
-  #file-list-close {
-    width: auto;
-    align-self: center;
-    background: transparent;
-    color: var(--ink-dim);
-    border-color: var(--border);
+  .file-list-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+  }
+  .file-list-actions button {
+    flex: 1;
     font-size: 13px;
-    padding: 10px 32px;
+    padding: 10px 16px;
     text-transform: none;
     letter-spacing: 0.02em;
     font-weight: 500;
+    border-radius: 4px;
+  }
+  #file-list-download-all {
+    background: var(--amber);
+    color: var(--bg);
+    border-color: var(--amber);
+  }
+  #file-list-close {
+    background: transparent;
+    color: var(--ink-dim);
+    border-color: var(--border);
   }
 
   /* ====== 帮助 modal ====== */
@@ -970,7 +982,7 @@
   </div>
 </div>
 <input id="file-pick" type="file" accept="image/*" hidden>
-<input id="file-send" type="file" hidden>
+<input id="file-send" type="file" hidden multiple>
 
 <div id="img-modal" class="modal">
   <img id="modal-img" alt="clipboard preview">
@@ -989,7 +1001,10 @@
   <div class="file-list-card">
     <div class="file-list-title">选择要下载的文件</div>
     <div class="file-list-items" id="file-list-items"></div>
-    <button id="file-list-close">取消</button>
+    <div class="file-list-actions">
+      <button id="file-list-download-all">全部下载</button>
+      <button id="file-list-close">取消</button>
+    </div>
   </div>
 </div>
 
@@ -1080,6 +1095,9 @@ const transferCancel = document.getElementById('transfer-cancel');
 const fileListModal = document.getElementById('file-list-modal');
 const fileListItems = document.getElementById('file-list-items');
 const fileListClose = document.getElementById('file-list-close');
+const fileListDownloadAll = document.getElementById('file-list-download-all');
+// picker 当前显示的文件列表缓存,「全部下载」按钮要用
+let fileListCurrent = [];
 const toolPanel = document.getElementById('tool-panel');
 const btnTools = document.getElementById('btn-tools');
 const btnEnter = document.getElementById('btn-enter');
@@ -1160,8 +1178,19 @@ let autoSendTimer = null;
 let isComposing = false;
 let lastSentType = null;
 let deviceName = 'PC';
-let pendingUploadFile = null;
 let currentUploadXHR = null;
+// 多文件上传队列:用户选多个文件全部入队,串行传(收到 upload_ready 才发下一个)。
+// 状态语义:
+// - uploadQueue:待传文件(已入队但还没收到 upload_ready)
+// - uploadCurrent:正在传的 File(对应 in-flight XHR)
+// - uploadBytesDone:本批次累计已完成字节(已传完的文件 size 累加)
+// - uploadTotalBytes / uploadTotalCount:本批次总字节 / 总文件数,用于聚合进度
+// 当队列空 + 没有当前 XHR 时表示批次结束,状态归零。
+let uploadQueue = [];
+let uploadCurrent = null;
+let uploadBytesDone = 0;
+let uploadTotalBytes = 0;
+let uploadTotalCount = 0;
 
 function setStatus(s, connected) {
   statusText.textContent = s;
@@ -1559,42 +1588,81 @@ function hideTransfer() {
   transferModal.classList.remove('show');
 }
 
-// 服务端确认上传 → 启动 XHR 上传
+// 服务端确认上传 → 启动 XHR 上传当前队首文件
 function onUploadReady(url) {
-  const file = pendingUploadFile;
-  pendingUploadFile = null;
-  if (!file) {
-    toast('没有待上传的文件');
+  if (!uploadCurrent) {
+    // 异常:服务端发了 upload_ready 但前端没在传。忽略。
     return;
   }
-
+  const file = uploadCurrent;
   const xhr = new XMLHttpRequest();
   currentUploadXHR = xhr;
-  showTransfer(`上传 ${file.name}`, 0, file.size);
+
+  // 多文件时 title 加 (idx/total) 前缀,聚合进度 = 本文件之前已完成字节 + 本文件已传字节
+  const idx = uploadTotalCount - uploadQueue.length; // 1-indexed 当前文件序号
+  const titlePrefix = uploadTotalCount > 1 ? `上传 (${idx}/${uploadTotalCount}) ` : '上传 ';
+  showTransfer(titlePrefix + file.name, uploadBytesDone, uploadTotalBytes);
 
   xhr.upload.onprogress = (e) => {
     if (e.lengthComputable) {
-      showTransfer(`上传 ${file.name}`, e.loaded, e.total);
+      showTransfer(titlePrefix + file.name, uploadBytesDone + e.loaded, uploadTotalBytes);
     }
   };
   xhr.onload = () => {
     currentUploadXHR = null;
-    hideTransfer();
     if (xhr.status === 200) {
+      uploadBytesDone += file.size;
       toast(`已上传 ${file.name}`);
+      uploadCurrent = null;
+      startNextUpload();
     } else if (xhr.status === 413) {
-      toast('文件太大（超过 PC 端上限）');
+      toast(`文件太大:${file.name}`);
+      abortUploadBatch();
     } else {
-      toast(`上传失败 (${xhr.status})`);
+      toast(`上传失败 (${xhr.status}):${file.name}`);
+      abortUploadBatch();
     }
   };
   xhr.onerror = () => {
     currentUploadXHR = null;
-    hideTransfer();
-    toast('上传失败（网络错误）');
+    toast(`上传失败（网络错误）:${file.name}`);
+    abortUploadBatch();
   };
   xhr.open('POST', url);
   xhr.send(file);
+}
+
+// 从队列取下一个文件发起 upload_start。队列空 → 整批完成,状态归零。
+function startNextUpload() {
+  if (uploadQueue.length === 0) {
+    resetUploadBatch();
+    hideTransfer();
+    return;
+  }
+  uploadCurrent = uploadQueue.shift();
+  // 先弹 transfer modal 占位,避免用户在 upload_start → upload_ready 之间感觉卡住
+  const idx = uploadTotalCount - uploadQueue.length;
+  const titlePrefix = uploadTotalCount > 1 ? `上传 (${idx}/${uploadTotalCount}) ` : '上传 ';
+  showTransfer(titlePrefix + uploadCurrent.name, uploadBytesDone, uploadTotalBytes);
+  send({ type: 'upload_start', name: uploadCurrent.name, size: uploadCurrent.size, mime: uploadCurrent.type || '' });
+}
+
+// 整批中止:中断当前 XHR + 清队列 + 关 modal。失败和用户主动取消都走这条。
+function abortUploadBatch() {
+  if (currentUploadXHR) {
+    currentUploadXHR.abort();
+    currentUploadXHR = null;
+  }
+  uploadCurrent = null;
+  resetUploadBatch();
+  hideTransfer();
+}
+
+function resetUploadBatch() {
+  uploadQueue = [];
+  uploadBytesDone = 0;
+  uploadTotalBytes = 0;
+  uploadTotalCount = 0;
 }
 
 // 服务端返回 file 元信息 → 交给浏览器原生下载接管
@@ -1609,7 +1677,7 @@ function onFileMeta(m) {
   toast(`正在下载 ${m.name}…`);
 }
 
-// 服务端返回 file_list → 单文件直接下载，多文件弹列表让用户选
+// 服务端返回 file_list → 单文件直接下载，多文件弹列表让用户选（含「全部下载」）
 function onFileList(files) {
   if (!files || files.length === 0) {
     toast(`${deviceName} 剪贴板为空`);
@@ -1628,6 +1696,7 @@ function escapeHtml(s) {
 }
 
 function showFilePicker(files) {
+  fileListCurrent = files;
   fileListItems.innerHTML = '';
   files.forEach((f) => {
     const item = document.createElement('div');
@@ -1642,6 +1711,16 @@ function showFilePicker(files) {
   fileListModal.classList.add('show');
 }
 
+// 「全部下载」:浏览器对连续程序性下载有限制(iOS Safari 尤其严),用 250ms stagger
+// 让每个 <a download> 有足够时间被浏览器下载管理器接管。
+fileListDownloadAll.addEventListener('click', () => {
+  const files = fileListCurrent;
+  hideFilePicker();
+  files.forEach((f, i) => {
+    setTimeout(() => onFileMeta(f), i * 250);
+  });
+});
+
 function hideFilePicker() {
   fileListModal.classList.remove('show');
 }
@@ -1652,21 +1731,30 @@ fileListModal.addEventListener('click', (e) => {
 });
 
 transferCancel.addEventListener('click', () => {
-  if (currentUploadXHR) {
-    currentUploadXHR.abort();
-    currentUploadXHR = null;
-  }
-  pendingUploadFile = null;
-  hideTransfer();
+  abortUploadBatch();
 });
 
 sendFileBtn.addEventListener('click', () => fileSend.click());
 fileSend.addEventListener('change', () => {
-  const f = fileSend.files && fileSend.files[0];
-  if (!f) return;
+  const files = fileSend.files;
+  if (!files || files.length === 0) return;
   fileSend.value = '';
-  pendingUploadFile = f;
-  send({ type: 'upload_start', name: f.name, size: f.size, mime: f.type || '' });
+  // 批量入队。新批次(队列空 + 没有在传)→ 计数从 0 起;追加到进行中的批次 → 计数累加。
+  const wasIdle = uploadQueue.length === 0 && !uploadCurrent && !currentUploadXHR;
+  if (wasIdle) {
+    uploadBytesDone = 0;
+    uploadTotalBytes = 0;
+    uploadTotalCount = 0;
+  }
+  for (const f of files) {
+    uploadQueue.push(f);
+    uploadTotalBytes += f.size;
+    uploadTotalCount += 1;
+  }
+  // 队列空闲 → 立即发起第一个;否则等当前文件传完 onUploadReady 自动续。
+  if (wasIdle) {
+    startNextUpload();
+  }
 });
 pullFileBtn.addEventListener('click', () => send({ type: 'get_file' }));
 
