@@ -1,20 +1,17 @@
-use std::sync::{Arc, Mutex};
-
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Query, State,
+        State,
     },
     http::StatusCode,
     response::Response,
 };
-use enigo::Enigo;
 use serde::Deserialize;
 
+use crate::backend::{BackendError, DynBackend, InputBackend};
 use crate::clipboard;
 use crate::file_transfer::{self, UploadMeta};
-use crate::inject;
-use crate::state::{AppState, TokenQuery};
+use crate::state::AppState;
 
 const MAX_TEXT_BYTES: usize = 100 * 1024;
 
@@ -58,23 +55,20 @@ enum Command {
 }
 
 pub async fn ws_handler(
+    _: crate::state::Authed,
     ws: WebSocketUpgrade,
-    Query(q): Query<TokenQuery>,
     State(state): State<AppState>,
 ) -> Result<Response, StatusCode> {
-    if q.t != state.token {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
     Ok(ws.on_upgrade(move |socket| handle_socket(socket, state)))
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
-    println!("[ws] 客户端已连接");
+    tracing::info!("ws 客户端已连接");
     // 升级后立刻推送设备名 + 主题偏好，前端用于状态栏显示和主题应用
-    let theme = state.theme.lock().unwrap().clone();
+    let theme = state.theme.lock().clone();
     let info = server_info_json(&state.name, &theme);
     if socket.send(Message::Text(info.into())).await.is_err() {
-        println!("[ws] 发送 server_info 失败，断开");
+        tracing::warn!("ws 发送 server_info 失败，断开");
         return;
     }
     while let Some(msg) = socket.recv().await {
@@ -89,71 +83,54 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             _ => {}
         }
     }
-    println!("[ws] 客户端断开");
+    tracing::info!("ws 客户端断开");
 }
 
 async fn dispatch(state: &AppState, raw: &str) -> String {
     let cmd: Command = match serde_json::from_str(raw) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[ws] 指令解析失败: {}", e);
+            tracing::warn!("ws 指令解析失败: {}", e);
             return error_json("decode_failed");
         }
     };
+    let backend = state.backend.clone();
     match cmd {
         Command::Text { mut value } => {
             truncate_in_place(&mut value, MAX_TEXT_BYTES);
-            let enigo = state.enigo.clone();
-            let result = tokio::task::spawn_blocking(move || inject::inject_text(&enigo, &value))
-                .await;
-            match result {
-                Ok(Ok(())) => ok_json(),
-                Ok(Err(e)) => {
-                    eprintln!("[ws] 注入失败: {}", e);
-                    error_json("inject_failed")
-                }
-                Err(e) => {
-                    eprintln!("[ws] spawn_blocking join 失败: {}", e);
-                    error_json("internal")
-                }
-            }
+            spawn_inject(backend.clone(), move |b| b.inject_text(&value)).await
         }
         Command::GetClipboardText => {
-            let cb = state.clipboard.clone();
-            let result = tokio::task::spawn_blocking(move || clipboard::read_text(&cb)).await;
-            match result {
-                Ok(Ok(Some(t))) => clipboard_text_json(t),
-                Ok(Ok(None)) => empty_json(),
-                Ok(Err(e)) => error_json(clipboard::error_code(&e)),
-                Err(_) => error_json("internal"),
-            }
+            spawn_block(backend.clone(), |b| b.read_clipboard_text(), |res| match res {
+                Some(t) => clipboard_text_json(t),
+                None => empty_json(),
+            })
+            .await
         }
         Command::GetClipboardImage => {
-            let cb = state.clipboard.clone();
-            let result =
-                tokio::task::spawn_blocking(move || clipboard::read_image_png_base64(&cb)).await;
-            match result {
-                Ok(Ok(Some((mime, b64)))) => clipboard_image_json(mime, b64),
-                Ok(Ok(None)) => empty_json(),
-                Ok(Err(e)) => error_json(clipboard::error_code(&e)),
-                Err(_) => error_json("internal"),
-            }
+            spawn_block(
+                backend.clone(),
+                |b| b.read_clipboard_image(),
+                |res| match res {
+                    Some((mime, b64)) => clipboard_image_json(mime, b64),
+                    None => empty_json(),
+                },
+            )
+            .await
         }
         Command::SetClipboardImage { data } => {
             if data.len() > clipboard::MAX_IMG_B64 {
                 return error_json("too_large");
             }
-            let cb = state.clipboard.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                let bytes = clipboard::decode_base64(&data)?;
-                clipboard::write_image_from_bytes(&cb, &bytes)
-            })
-            .await;
-            match result {
-                Ok(Ok(())) => ok_json(),
-                Ok(Err(e)) => error_json(clipboard::error_code(&e)),
-                Err(_) => error_json("internal"),
-            }
+            spawn_block(
+                backend.clone(),
+                move |b| {
+                    let bytes = clipboard::decode_base64(&data)?;
+                    b.write_clipboard_image(&bytes)
+                },
+                |_| ok_json(),
+            )
+            .await
         }
         Command::UploadStart { name, size, mime } => {
             if size > state.max_size {
@@ -174,211 +151,184 @@ async fn dispatch(state: &AppState, raw: &str) -> String {
             upload_ready_json(&id, &url)
         }
         Command::GetFile => {
-            let cb = state.clipboard.clone();
-            let result = tokio::task::spawn_blocking(move || clipboard::read_file_list(&cb)).await;
-            match result {
-                Ok(Ok(files)) if !files.is_empty() => {
-                    let files_json: Vec<serde_json::Value> = files
-                        .into_iter()
-                        .map(|fm| {
-                            let name = fm.name.clone();
-                            let size = fm.size;
-                            let mime = fm.mime.clone();
-                            let meta = file_transfer::DownloadMeta {
-                                path: fm.path,
-                                name: name.clone(),
-                                size,
-                                mime: mime.clone(),
-                                created_at: std::time::Instant::now(),
-                            };
-                            let id = state.registry.register_download(meta);
-                            let url = format!("/download/{}?t={}", id, state.token);
-                            serde_json::json!({
-                                "name": name,
-                                "size": size,
-                                "mime": mime,
-                                "url": url,
+            spawn_block(
+                backend.clone(),
+                |b| b.read_clipboard_files(),
+                |files| {
+                    if files.is_empty() {
+                        empty_json()
+                    } else {
+                        let files_json: Vec<serde_json::Value> = files
+                            .into_iter()
+                            .map(|fm| {
+                                let name = fm.name.clone();
+                                let size = fm.size;
+                                let mime = fm.mime.clone();
+                                let meta = file_transfer::DownloadMeta {
+                                    path: fm.path,
+                                    name: name.clone(),
+                                    size,
+                                    mime: mime.clone(),
+                                    created_at: std::time::Instant::now(),
+                                };
+                                let id = state.registry.register_download(meta);
+                                let url = format!("/download/{}?t={}", id, state.token);
+                                serde_json::json!({
+                                    "name": name,
+                                    "size": size,
+                                    "mime": mime,
+                                    "url": url,
+                                })
                             })
-                        })
-                        .collect();
-                    file_list_json(files_json)
-                }
-                Ok(Ok(_)) => empty_json(),
-                Ok(Err(e)) => error_json(clipboard::error_code(&e)),
-                Err(_) => error_json("internal"),
-            }
+                            .collect();
+                        file_list_json(files_json)
+                    }
+                },
+            )
+            .await
         }
-        Command::Enter => inject_key_cmd(&state.enigo, enigo::Key::Return).await,
-        Command::Tab => inject_key_cmd(&state.enigo, enigo::Key::Tab).await,
-        Command::Backspace => inject_key_cmd(&state.enigo, enigo::Key::Backspace).await,
-        Command::Copy => inject_copy_cmd(&state.enigo).await,
-        Command::Paste => inject_paste_cmd(&state.enigo).await,
+        Command::Enter => inject_key_cmd(&backend, enigo::Key::Return).await,
+        Command::Tab => inject_key_cmd(&backend, enigo::Key::Tab).await,
+        Command::Backspace => inject_key_cmd(&backend, enigo::Key::Backspace).await,
+        Command::Copy => inject_copy_cmd(&backend).await,
+        Command::Paste => inject_paste_cmd(&backend).await,
         Command::MouseMove { dx, dy } => {
             // 后端乘灵敏度系数：前端完全不感知，state.mouse_sensitivity 改了立即生效。
             // 不 clamp：dx/dy 是手机端相对位移（几像素到几十像素），即使 ×5.0 也远不到 i32 边界。
-            let s = *state.mouse_sensitivity.lock().unwrap();
-            inject_mouse_move_cmd(&state.enigo, (dx as f32 * s) as i32, (dy as f32 * s) as i32).await
+            let s = *state.mouse_sensitivity.lock();
+            inject_mouse_move_cmd(&backend, (dx as f32 * s) as i32, (dy as f32 * s) as i32).await
         }
         Command::MouseClick { button } => {
             let btn = button.into();
-            inject_mouse_button_cmd(&state.enigo, btn).await
+            inject_mouse_button_cmd(&backend, btn).await
         }
         Command::MousePress { button } => {
             let btn = button.into();
-            inject_mouse_button_press_cmd(&state.enigo, btn).await
+            inject_mouse_button_press_cmd(&backend, btn).await
         }
         Command::MouseRelease { button } => {
             let btn = button.into();
-            inject_mouse_button_release_cmd(&state.enigo, btn).await
+            inject_mouse_button_release_cmd(&backend, btn).await
         }
-        Command::MouseScroll { dy } => inject_mouse_scroll_cmd(&state.enigo, dy).await,
+        Command::MouseScroll { dy } => inject_mouse_scroll_cmd(&backend, dy).await,
     }
 }
 
-async fn inject_key_cmd(
-    enigo: &Arc<Mutex<Enigo>>,
-    key: enigo::Key,
+// ============================================================================
+// spawn_blocking 调度 helper：消除「克隆 backend → spawn_blocking → 三段 match」样板
+// ============================================================================
+
+/// 把一个返回 `Result<(), BackendError>` 的阻塞注入操作调度到 blocking 线程池，收敛成协议 JSON。
+///
+/// 统一处理三种结果：
+/// - `Ok(Ok(()))` → `ok_json()`
+/// - `Ok(Err(e))` → 业务失败，记 warn 日志 + `error_json(e.error_code())`
+/// - `Err(join_err)` → 线程池 panic，记 error 日志 + `error_json("internal")`
+///
+/// 所有键鼠/复制粘贴注入都走这条路径。`op` 闭包接收 `&dyn InputBackend`，
+/// 这样调用方只需写 `|b| b.inject_xxx(...)`，backend 句柄由本函数注入。
+async fn spawn_inject<F>(backend: DynBackend, op: F) -> String
+where
+    F: FnOnce(&dyn InputBackend) -> Result<(), BackendError> + Send + 'static,
+{    match tokio::task::spawn_blocking(move || op(backend.as_ref())).await {
+        Ok(Ok(())) => ok_json(),
+        Ok(Err(e)) => {
+            let code = e.error_code();
+            tracing::warn!(error = ?e, code, "注入失败");
+            error_json(code)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "spawn_blocking join 失败");
+            error_json("internal")
+        }
+    }
+}
+
+/// 把一个返回 `Result<T, BackendError>` 的阻塞剪贴板操作调度到 blocking 线程池，
+/// 成功时用 `map` 把 `T` 转成协议 JSON，失败时映射成 `error_code`。
+///
+/// 与 `spawn_inject` 的区别：剪贴板操作有返回值（读到的文本/图片/文件列表），
+/// 用 `map` 闭包把成功值转成协议 JSON。
+async fn spawn_block<T, F, M>(
+    backend: DynBackend,
+    op: F,
+    map: M,
+) -> String
+where
+    F: FnOnce(&dyn InputBackend) -> Result<T, BackendError> + Send + 'static,
+    T: Send + 'static,
+    M: FnOnce(T) -> String,
+{
+    let result = tokio::task::spawn_blocking(move || op(backend.as_ref())).await;
+    match result {
+        Ok(Ok(t)) => map(t),
+        Ok(Err(e)) => {
+            let code = e.error_code();
+            tracing::warn!(error = ?e, code, "剪贴板操作失败");
+            error_json(code)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "spawn_blocking join 失败");
+            error_json("internal")
+        }
+    }
+}
+
+// ============================================================================
+// 注入指令的薄封装：每个调用点只负责构造闭包，调度 + 错误收敛全由 spawn_inject 承担
+// ============================================================================
+
+async fn inject_key_cmd(backend: &DynBackend, key: enigo::Key) -> String {
+    let backend = backend.clone();
+    spawn_inject(backend, move |b| b.inject_key(key)).await
+}
+
+async fn inject_mouse_move_cmd(
+    backend: &DynBackend,
+    dx: i32,
+    dy: i32,
 ) -> String {
-    let enigo = enigo.clone();
-    let result = tokio::task::spawn_blocking(move || inject::inject_key(&enigo, key)).await;
-    match result {
-        Ok(Ok(())) => ok_json(),
-        Ok(Err(e)) => {
-            eprintln!("[ws] 按键注入失败: {}", e);
-            error_json("inject_failed")
-        }
-        Err(e) => {
-            eprintln!("[ws] spawn_blocking join 失败: {}", e);
-            error_json("internal")
-        }
-    }
+    let backend = backend.clone();
+    spawn_inject(backend, move |b| b.inject_mouse_move(dx, dy)).await
 }
 
-async fn inject_mouse_move_cmd(enigo: &Arc<Mutex<Enigo>>, dx: i32, dy: i32) -> String {
-    let enigo = enigo.clone();
-    let result =
-        tokio::task::spawn_blocking(move || inject::inject_mouse_move(&enigo, dx, dy)).await;
-    match result {
-        Ok(Ok(())) => ok_json(),
-        Ok(Err(e)) => {
-            eprintln!("[ws] 鼠标移动失败: {}", e);
-            error_json("inject_failed")
-        }
-        Err(e) => {
-            eprintln!("[ws] spawn_blocking join 失败: {}", e);
-            error_json("internal")
-        }
-    }
-}
-
-async fn inject_mouse_button_cmd(enigo: &Arc<Mutex<Enigo>>, button: enigo::Button) -> String {
-    let enigo = enigo.clone();
-    let result =
-        tokio::task::spawn_blocking(move || inject::inject_mouse_button(&enigo, button)).await;
-    match result {
-        Ok(Ok(())) => ok_json(),
-        Ok(Err(e)) => {
-            eprintln!("[ws] 鼠标点击失败: {}", e);
-            error_json("inject_failed")
-        }
-        Err(e) => {
-            eprintln!("[ws] spawn_blocking join 失败: {}", e);
-            error_json("internal")
-        }
-    }
+async fn inject_mouse_button_cmd(
+    backend: &DynBackend,
+    button: enigo::Button,
+) -> String {
+    let backend = backend.clone();
+    spawn_inject(backend, move |b| b.inject_mouse_button(button)).await
 }
 
 async fn inject_mouse_button_press_cmd(
-    enigo: &Arc<Mutex<Enigo>>,
+    backend: &DynBackend,
     button: enigo::Button,
 ) -> String {
-    let enigo = enigo.clone();
-    let result =
-        tokio::task::spawn_blocking(move || inject::inject_mouse_button_press(&enigo, button))
-            .await;
-    match result {
-        Ok(Ok(())) => ok_json(),
-        Ok(Err(e)) => {
-            eprintln!("[ws] 鼠标按下失败: {}", e);
-            error_json("inject_failed")
-        }
-        Err(e) => {
-            eprintln!("[ws] spawn_blocking join 失败: {}", e);
-            error_json("internal")
-        }
-    }
+    let backend = backend.clone();
+    spawn_inject(backend, move |b| b.inject_mouse_button_press(button)).await
 }
 
 async fn inject_mouse_button_release_cmd(
-    enigo: &Arc<Mutex<Enigo>>,
+    backend: &DynBackend,
     button: enigo::Button,
 ) -> String {
-    let enigo = enigo.clone();
-    let result =
-        tokio::task::spawn_blocking(move || inject::inject_mouse_button_release(&enigo, button))
-            .await;
-    match result {
-        Ok(Ok(())) => ok_json(),
-        Ok(Err(e)) => {
-            eprintln!("[ws] 鼠标抬起失败: {}", e);
-            error_json("inject_failed")
-        }
-        Err(e) => {
-            eprintln!("[ws] spawn_blocking join 失败: {}", e);
-            error_json("internal")
-        }
-    }
+    let backend = backend.clone();
+    spawn_inject(backend, move |b| b.inject_mouse_button_release(button)).await
 }
 
-async fn inject_mouse_scroll_cmd(enigo: &Arc<Mutex<Enigo>>, dy: i32) -> String {
-    let enigo = enigo.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        inject::inject_mouse_scroll(&enigo, dy, enigo::Axis::Vertical)
-    })
-    .await;
-    match result {
-        Ok(Ok(())) => ok_json(),
-        Ok(Err(e)) => {
-            eprintln!("[ws] 滚轮失败: {}", e);
-            error_json("inject_failed")
-        }
-        Err(e) => {
-            eprintln!("[ws] spawn_blocking join 失败: {}", e);
-            error_json("internal")
-        }
-    }
+async fn inject_mouse_scroll_cmd(backend: &DynBackend, dy: i32) -> String {
+    let backend = backend.clone();
+    spawn_inject(backend, move |b| b.inject_mouse_scroll(dy, enigo::Axis::Vertical)).await
 }
 
-async fn inject_copy_cmd(enigo: &Arc<Mutex<Enigo>>) -> String {
-    let enigo = enigo.clone();
-    let result = tokio::task::spawn_blocking(move || inject::inject_copy(&enigo)).await;
-    match result {
-        Ok(Ok(())) => ok_json(),
-        Ok(Err(e)) => {
-            eprintln!("[ws] 复制快捷键失败: {}", e);
-            error_json("inject_failed")
-        }
-        Err(e) => {
-            eprintln!("[ws] spawn_blocking join 失败: {}", e);
-            error_json("internal")
-        }
-    }
+async fn inject_copy_cmd(backend: &DynBackend) -> String {
+    let backend = backend.clone();
+    spawn_inject(backend, |b| b.inject_copy()).await
 }
 
-async fn inject_paste_cmd(enigo: &Arc<Mutex<Enigo>>) -> String {
-    let enigo = enigo.clone();
-    let result = tokio::task::spawn_blocking(move || inject::inject_paste(&enigo)).await;
-    match result {
-        Ok(Ok(())) => ok_json(),
-        Ok(Err(e)) => {
-            eprintln!("[ws] 粘贴快捷键失败: {}", e);
-            error_json("inject_failed")
-        }
-        Err(e) => {
-            eprintln!("[ws] spawn_blocking join 失败: {}", e);
-            error_json("internal")
-        }
-    }
+async fn inject_paste_cmd(backend: &DynBackend) -> String {
+    let backend = backend.clone();
+    spawn_inject(backend, |b| b.inject_paste()).await
 }
 
 fn truncate_in_place(s: &mut String, max_bytes: usize) {
@@ -597,5 +547,293 @@ mod tests {
     fn parse_paste() {
         let cmd: Command = serde_json::from_str(r#"{"type":"paste"}"#).unwrap();
         assert!(matches!(cmd, Command::Paste));
+    }
+
+    // ========================================================================
+    // MockBackend：记录所有调用，验证 dispatch 调度机制（spawn_inject/spawn_block）
+    // 把 backend 方法调用 + 参数正确传递 + 错误收敛这三件事从「无法 mock 的真实 OS」
+    // 里解耦出来。这是 dispatch 最容易出 bug 的部分（参数顺序、灵敏度乘法、错误码映射）。
+    // ========================================================================
+
+    use std::sync::Mutex;
+
+    use crate::backend::{BackendError, FileMeta};
+    use crate::clipboard::CbError;
+
+    /// MockBackend 记录的方法调用，用于断言「dispatch 收到 X 指令后调用了 backend 的 Y 方法」。
+    #[derive(Debug, Clone, PartialEq)]
+    enum Call {
+        InjectText(String),
+        InjectKey(String),
+        InjectMouseMove(i32, i32),
+        InjectMouseButton(String),
+        InjectMouseButtonPress(String),
+        InjectMouseButtonRelease(String),
+        InjectMouseScroll(i32),
+        InjectCopy,
+        InjectPaste,
+        ReadClipboardText,
+        ReadClipboardImage,
+        WriteClipboardImage,
+        ReadClipboardFiles,
+    }
+
+    /// 测试用 InputBackend：记录所有调用到 `calls`，方法返回 `ret` 预设的结果。
+    struct MockBackend {
+        calls: Mutex<Vec<Call>>,
+        /// 控制下一次调用的返回值：Ok(()) 成功 / Err(BackendError) 失败。
+        /// 简化：所有方法返回同一个预设结果（足够测错误收敛路径）。
+        fail: bool,
+        /// read_clipboard_text 返回的预设文本。
+        text: Option<String>,
+    }
+
+    impl MockBackend {
+        fn record(&self, call: Call) {
+            self.calls.lock().unwrap().push(call);
+        }
+
+        fn calls(&self) -> Vec<Call> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl InputBackend for MockBackend {
+        fn inject_text(&self, text: &str) -> Result<(), BackendError> {
+            self.record(Call::InjectText(text.to_string()));
+            if self.fail {
+                Err(BackendError::Inject("mock fail".into()))
+            } else {
+                Ok(())
+            }
+        }
+        fn inject_key(&self, key: enigo::Key) -> Result<(), BackendError> {
+            let label = format!("{:?}", key);
+            self.record(Call::InjectKey(label));
+            if self.fail {
+                Err(BackendError::Inject("mock fail".into()))
+            } else {
+                Ok(())
+            }
+        }
+        fn inject_mouse_move(&self, dx: i32, dy: i32) -> Result<(), BackendError> {
+            self.record(Call::InjectMouseMove(dx, dy));
+            if self.fail {
+                Err(BackendError::Inject("mock fail".into()))
+            } else {
+                Ok(())
+            }
+        }
+        fn inject_mouse_button(&self, button: enigo::Button) -> Result<(), BackendError> {
+            self.record(Call::InjectMouseButton(format!("{:?}", button)));
+            if self.fail {
+                Err(BackendError::Inject("mock fail".into()))
+            } else {
+                Ok(())
+            }
+        }
+        fn inject_mouse_button_press(&self, button: enigo::Button) -> Result<(), BackendError> {
+            self.record(Call::InjectMouseButtonPress(format!("{:?}", button)));
+            if self.fail {
+                Err(BackendError::Inject("mock fail".into()))
+            } else {
+                Ok(())
+            }
+        }
+        fn inject_mouse_button_release(&self, button: enigo::Button) -> Result<(), BackendError> {
+            self.record(Call::InjectMouseButtonRelease(format!("{:?}", button)));
+            if self.fail {
+                Err(BackendError::Inject("mock fail".into()))
+            } else {
+                Ok(())
+            }
+        }
+        fn inject_mouse_scroll(&self, amount: i32, _axis: enigo::Axis) -> Result<(), BackendError> {
+            self.record(Call::InjectMouseScroll(amount));
+            if self.fail {
+                Err(BackendError::Inject("mock fail".into()))
+            } else {
+                Ok(())
+            }
+        }
+        fn inject_copy(&self) -> Result<(), BackendError> {
+            self.record(Call::InjectCopy);
+            if self.fail {
+                Err(BackendError::Inject("mock fail".into()))
+            } else {
+                Ok(())
+            }
+        }
+        fn inject_paste(&self) -> Result<(), BackendError> {
+            self.record(Call::InjectPaste);
+            if self.fail {
+                Err(BackendError::Inject("mock fail".into()))
+            } else {
+                Ok(())
+            }
+        }
+        fn read_clipboard_text(&self) -> Result<Option<String>, BackendError> {
+            self.record(Call::ReadClipboardText);
+            if self.fail {
+                Err(BackendError::Clipboard(CbError::ClipboardOccupied))
+            } else {
+                Ok(self.text.clone())
+            }
+        }
+        fn read_clipboard_image(&self) -> Result<Option<(String, String)>, BackendError> {
+            self.record(Call::ReadClipboardImage);
+            if self.fail {
+                Err(BackendError::Clipboard(CbError::ClipboardOccupied))
+            } else {
+                Ok(None)
+            }
+        }
+        fn write_clipboard_image(&self, _bytes: &[u8]) -> Result<(), BackendError> {
+            self.record(Call::WriteClipboardImage);
+            if self.fail {
+                Err(BackendError::Clipboard(CbError::ConversionFailure))
+            } else {
+                Ok(())
+            }
+        }
+        fn read_clipboard_files(&self) -> Result<Vec<FileMeta>, BackendError> {
+            self.record(Call::ReadClipboardFiles);
+            if self.fail {
+                Err(BackendError::Clipboard(CbError::ContentNotAvailable))
+            } else {
+                Ok(Vec::new())
+            }
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    fn mock_dyn(fail: bool) -> crate::backend::DynBackend {
+        std::sync::Arc::new(MockBackend {
+            calls: Mutex::new(Vec::new()),
+            fail,
+            text: None,
+        })
+    }
+
+    /// spawn_inject 成功 → ok_json，且 backend 方法被调用。
+    #[tokio::test]
+    async fn spawn_inject_success_returns_ok() {
+        let backend = mock_dyn(false);
+        // 捕获 MockBackend 的 calls 引用：从 Arc 拿到 &MockBackend 需要先存一份弱引用方案太绕，
+        // 改用：构造两个独立 backend——一个供 spawn_inject 消费，一个只用来读 calls。
+        // 更简单的办法：spawn_inject 拿 Arc，我们 clone 一份 Arc 先存着。
+        let probe = backend.clone();
+        let json = spawn_inject(backend, |b| b.inject_text("hi")).await;
+        assert_eq!(json, r#"{"type":"ok"}"#);
+        // probe 和传入的 backend 是同一个 Arc，calls 共享。
+        let mock = probe
+            .as_ref()
+            .as_any()
+            .downcast_ref::<MockBackend>()
+            .expect("downcast MockBackend");
+        assert_eq!(mock.calls(), vec![Call::InjectText("hi".to_string())]);
+    }
+
+    /// spawn_inject 失败 → error_json(inject_failed)。
+    #[tokio::test]
+    async fn spawn_inject_failure_returns_inject_failed() {
+        let backend = mock_dyn(true);
+        let json = spawn_inject(backend, |b| b.inject_key(enigo::Key::Return)).await;
+        assert_eq!(json, r#"{"type":"error","code":"inject_failed"}"#);
+    }
+
+    /// spawn_block 成功 → map 应用到返回值。
+    #[tokio::test]
+    async fn spawn_block_success_maps_result() {
+        let backend: crate::backend::DynBackend = std::sync::Arc::new(MockBackend {
+            calls: Mutex::new(Vec::new()),
+            fail: false,
+            text: Some("hello".to_string()),
+        });
+        let json = spawn_block(
+            backend,
+            |b| b.read_clipboard_text(),
+            |res| match res {
+                Some(t) => clipboard_text_json(t),
+                None => empty_json(),
+            },
+        )
+        .await;
+        // serde_json::json! 用 BTreeMap 序列化，字段按字母序：content 在 type 前。
+        assert_eq!(
+            json,
+            r#"{"content":"hello","type":"clipboard_text"}"#
+        );
+    }
+
+    /// spawn_block 失败 → error_code 映射（ClipboardOccupied → clipboard_busy）。
+    #[tokio::test]
+    async fn spawn_block_failure_maps_error_code() {
+        let backend = mock_dyn(true);
+        let json = spawn_block(
+            backend,
+            |b| b.read_clipboard_text(),
+            |res| match res {
+                Some(t) => clipboard_text_json(t),
+                None => empty_json(),
+            },
+        )
+        .await;
+        assert_eq!(
+            json,
+            r#"{"type":"error","code":"clipboard_busy"}"#
+        );
+    }
+
+    /// spawn_block 返回空 → empty_json。
+    #[tokio::test]
+    async fn spawn_block_none_returns_empty() {
+        let backend = mock_dyn(false);
+        let json = spawn_block(
+            backend,
+            |b| b.read_clipboard_text(),
+            |res| match res {
+                Some(t) => clipboard_text_json(t),
+                None => empty_json(),
+            },
+        )
+        .await;
+        assert_eq!(json, r#"{"type":"empty"}"#);
+    }
+
+    /// 鼠标移动 helper：参数透传（含灵敏度会在 dispatch 层乘，helper 本身原样传）。
+    #[tokio::test]
+    async fn inject_mouse_move_cmd_passes_params() {
+        let backend = mock_dyn(false);
+        let probe = backend.clone();
+        let json = inject_mouse_move_cmd(&backend, 10, -5).await;
+        assert_eq!(json, r#"{"type":"ok"}"#);
+        let mock = probe.as_ref().as_any().downcast_ref::<MockBackend>().unwrap();
+        assert_eq!(mock.calls(), vec![Call::InjectMouseMove(10, -5)]);
+    }
+
+    /// 滚轮 helper：参数 + 固定 Vertical 轴。
+    #[tokio::test]
+    async fn inject_mouse_scroll_cmd_passes_amount() {
+        let backend = mock_dyn(false);
+        let probe = backend.clone();
+        let json = inject_mouse_scroll_cmd(&backend, 3).await;
+        assert_eq!(json, r#"{"type":"ok"}"#);
+        let mock = probe.as_ref().as_any().downcast_ref::<MockBackend>().unwrap();
+        assert_eq!(mock.calls(), vec![Call::InjectMouseScroll(3)]);
+    }
+
+    /// Copy/Paste helper：无参数调用记录。
+    #[tokio::test]
+    async fn inject_copy_paste_cmd_records_calls() {
+        let backend = mock_dyn(false);
+        let probe = backend.clone();
+        inject_copy_cmd(&backend).await;
+        inject_paste_cmd(&backend).await;
+        let mock = probe.as_ref().as_any().downcast_ref::<MockBackend>().unwrap();
+        assert_eq!(mock.calls(), vec![Call::InjectCopy, Call::InjectPaste]);
     }
 }

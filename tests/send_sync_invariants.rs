@@ -3,16 +3,17 @@
 //! 这些断言会立即报错，让我们重新审视 axum State 用法。
 
 use enigo::Enigo;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 fn _assert_send<T: Send>() {}
 fn _assert_sync<T: Sync>() {}
 
 #[test]
 fn arc_mutex_enigo_is_send_sync() {
-    // axum AppState 必须满足的边界
-    _assert_send::<Arc<Mutex<Enigo>>>();
-    _assert_sync::<Arc<Mutex<Enigo>>>();
+    // axum AppState 必须满足的边界。
+    // 注意：生产代码用 parking_lot::Mutex（不 poison），这里与生产保持一致。
+    _assert_send::<Arc<parking_lot::Mutex<Enigo>>>();
+    _assert_sync::<Arc<parking_lot::Mutex<Enigo>>>();
     // AppState 本身也要 Clone + Send + Sync
     // (Arc<T> 总是 Clone，所以这等价于上面两个断言)
 }
@@ -27,7 +28,7 @@ fn enigo_is_send() {
 #[test]
 fn arc_mutex_arboard_clipboard_is_send_sync() {
     // arboard::Clipboard 在 macOS 上同样仅 Send 不 Sync，
-    // 与 enigo 一致，用 Arc<Mutex<..>> 包裹后 Send + Sync 都满足。
-    _assert_send::<Arc<Mutex<arboard::Clipboard>>>();
-    _assert_sync::<Arc<Mutex<arboard::Clipboard>>>();
+    // 与 enigo 一致，用 Arc<parking_lot::Mutex<..>> 包裹后 Send + Sync 都满足。
+    _assert_send::<Arc<parking_lot::Mutex<arboard::Clipboard>>>();
+    _assert_sync::<Arc<parking_lot::Mutex<arboard::Clipboard>>>();
 }

@@ -1,10 +1,14 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use enigo::{Axis, Button, Coordinate, Enigo, Keyboard, Mouse};
 
+/// parking_lot::lock() 不返回 Result（不会 poison），所以不需要 .map_err。
+/// guard 用完自动释放。
+type LockedEnigo<'a> = parking_lot::MutexGuard<'a, Enigo>;
+
 /// 把文本注入到当前焦点窗口。在 blocking 线程里调用。
-pub fn inject_text(enigo: &Arc<Mutex<Enigo>>, text: &str) -> Result<(), String> {
-    let mut e = enigo.lock().map_err(|e| format!("lock error: {}", e))?;
+pub fn inject_text(enigo: &Arc<parking_lot::Mutex<Enigo>>, text: &str) -> Result<(), String> {
+    let mut e: LockedEnigo = enigo.lock();
     e.text(text).map_err(|e| format!("inject error: {}", e))
 }
 
@@ -13,43 +17,60 @@ pub fn inject_text(enigo: &Arc<Mutex<Enigo>>, text: &str) -> Result<(), String> 
 /// 用 enigo 的 `key()` 路径（基于虚拟键码 / keysym），与 `text()` 的 Unicode
 /// 注入路径不同：本函数走系统键盘布局，专门用于功能键（Enter / Tab / Backspace 等），
 /// 不用于打字。
-pub fn inject_key(enigo: &Arc<Mutex<Enigo>>, key: enigo::Key) -> Result<(), String> {
-    let mut e = enigo.lock().map_err(|e| format!("lock error: {}", e))?;
+pub fn inject_key(enigo: &Arc<parking_lot::Mutex<Enigo>>, key: enigo::Key) -> Result<(), String> {
+    let mut e = enigo.lock();
     e.key(key, enigo::Direction::Click)
         .map_err(|e| format!("key error: {}", e))
 }
 
 /// 相对移动鼠标光标。dx / dy 单位是像素，可为负数。
-pub fn inject_mouse_move(enigo: &Arc<Mutex<Enigo>>, dx: i32, dy: i32) -> Result<(), String> {
-    let mut e = enigo.lock().map_err(|e| format!("lock error: {}", e))?;
+pub fn inject_mouse_move(
+    enigo: &Arc<parking_lot::Mutex<Enigo>>,
+    dx: i32,
+    dy: i32,
+) -> Result<(), String> {
+    let mut e = enigo.lock();
     e.move_mouse(dx, dy, Coordinate::Rel)
         .map_err(|e| format!("mouse move error: {}", e))
 }
 
 /// 点击鼠标按钮（按下 + 抬起）。
-pub fn inject_mouse_button(enigo: &Arc<Mutex<Enigo>>, button: Button) -> Result<(), String> {
-    let mut e = enigo.lock().map_err(|e| format!("lock error: {}", e))?;
+pub fn inject_mouse_button(
+    enigo: &Arc<parking_lot::Mutex<Enigo>>,
+    button: Button,
+) -> Result<(), String> {
+    let mut e = enigo.lock();
     e.button(button, enigo::Direction::Click)
         .map_err(|e| format!("mouse button error: {}", e))
 }
 
 /// 按下鼠标按钮（不抬起）。用于拖拽手势的开始。
-pub fn inject_mouse_button_press(enigo: &Arc<Mutex<Enigo>>, button: Button) -> Result<(), String> {
-    let mut e = enigo.lock().map_err(|e| format!("lock error: {}", e))?;
+pub fn inject_mouse_button_press(
+    enigo: &Arc<parking_lot::Mutex<Enigo>>,
+    button: Button,
+) -> Result<(), String> {
+    let mut e = enigo.lock();
     e.button(button, enigo::Direction::Press)
         .map_err(|e| format!("mouse press error: {}", e))
 }
 
 /// 抬起鼠标按钮。用于拖拽手势的结束。
-pub fn inject_mouse_button_release(enigo: &Arc<Mutex<Enigo>>, button: Button) -> Result<(), String> {
-    let mut e = enigo.lock().map_err(|e| format!("lock error: {}", e))?;
+pub fn inject_mouse_button_release(
+    enigo: &Arc<parking_lot::Mutex<Enigo>>,
+    button: Button,
+) -> Result<(), String> {
+    let mut e = enigo.lock();
     e.button(button, enigo::Direction::Release)
         .map_err(|e| format!("mouse release error: {}", e))
 }
 
 /// 滚动鼠标滚轮。amount 为正向下 / 向右，为负向上 / 向左。
-pub fn inject_mouse_scroll(enigo: &Arc<Mutex<Enigo>>, amount: i32, axis: Axis) -> Result<(), String> {
-    let mut e = enigo.lock().map_err(|e| format!("lock error: {}", e))?;
+pub fn inject_mouse_scroll(
+    enigo: &Arc<parking_lot::Mutex<Enigo>>,
+    amount: i32,
+    axis: Axis,
+) -> Result<(), String> {
+    let mut e = enigo.lock();
     e.scroll(amount, axis)
         .map_err(|e| format!("mouse scroll error: {}", e))
 }
@@ -70,8 +91,8 @@ fn platform_copy_paste_modifier() -> enigo::Key {
 ///
 /// 即使中途失败，也保证释放修饰键，避免按键卡住（否则用户的真实键盘
 /// 会一直「按住 Ctrl/Cmd」，后续所有按键都变成快捷键）。
-fn inject_shortcut(enigo: &Arc<Mutex<Enigo>>, ch: char) -> Result<(), String> {
-    let mut e = enigo.lock().map_err(|e| format!("lock error: {}", e))?;
+fn inject_shortcut(enigo: &Arc<parking_lot::Mutex<Enigo>>, ch: char) -> Result<(), String> {
+    let mut e = enigo.lock();
     let modifier = platform_copy_paste_modifier();
 
     let press = e.key(modifier, enigo::Direction::Press);
@@ -84,10 +105,10 @@ fn inject_shortcut(enigo: &Arc<Mutex<Enigo>>, ch: char) -> Result<(), String> {
     Ok(())
 }
 
-pub fn inject_copy(enigo: &Arc<Mutex<Enigo>>) -> Result<(), String> {
+pub fn inject_copy(enigo: &Arc<parking_lot::Mutex<Enigo>>) -> Result<(), String> {
     inject_shortcut(enigo, 'c')
 }
 
-pub fn inject_paste(enigo: &Arc<Mutex<Enigo>>) -> Result<(), String> {
+pub fn inject_paste(enigo: &Arc<parking_lot::Mutex<Enigo>>) -> Result<(), String> {
     inject_shortcut(enigo, 'v')
 }

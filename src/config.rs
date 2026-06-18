@@ -5,7 +5,7 @@
 //! - 所有字段 `Option<T>`，`None` 表示「未设置」（用于三层叠加：built-in → 文件 → CLI）
 //! - 损坏文件**绝不 panic**（tray app 双击启动下 panic = 静默崩溃），改名 `.bad-{ts}`
 //!   备份后用 default 继续
-//! - 所有 handler 走 `Query<TokenQuery>` 验证 token，复用现有鉴权机制
+//! - 所有 handler 通过 `Authed` extractor（`?t=<token>` 校验）统一鉴权，复用现有 token 机制
 //! - `POST /api/config` 通过 axum `Json<T>` extractor 强制 `Content-Type: application/json`
 //!   ——浏览器跨站 POST 这个 Content-Type 触发 CORS preflight，我们不开 CORS，等于免费 CSRF 防御
 
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::net;
-use crate::state::{AppState, TokenQuery};
+use crate::state::AppState;
 
 const CONFIG_HTML: &str = include_str!("../static/config.html");
 const ONE_TB: u64 = 1024 * 1024 * 1024 * 1024;
@@ -58,7 +58,7 @@ pub fn load() -> Config {
     let path = match config_path() {
         Some(p) => p,
         None => {
-            eprintln!("[config] 系统未提供 config_dir，跳过配置文件");
+            tracing::warn!("系统未提供 config_dir，跳过配置文件");
             return Config::default();
         }
     };
@@ -66,21 +66,21 @@ pub fn load() -> Config {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Config::default(),
         Err(e) => {
-            eprintln!("[config] 读取 {} 失败：{}，跳过配置文件", path.display(), e);
+            tracing::warn!("读取配置 {} 失败：{}，跳过配置文件", path.display(), e);
             return Config::default();
         }
     };
     match toml::from_str::<Config>(&text) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[config] 解析 {} 失败：{}", path.display(), e);
+            tracing::warn!("解析配置 {} 失败：{}", path.display(), e);
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             let backup = path.with_extension(format!("toml.bad-{}", ts));
             if std::fs::rename(&path, &backup).is_ok() {
-                eprintln!("[config] 原文件已备份到 {}", backup.display());
+                tracing::info!("原配置文件已备份到 {}", backup.display());
             }
             Config::default()
         }
@@ -156,15 +156,12 @@ pub fn normalize_theme(raw: &str) -> Result<String, String> {
 // ============================================================================
 
 /// `GET /config?t=<token>` → 配置页 HTML，首屏注入当前主题（同 index_handler）。
-/// token 校验失败返回 401。
+/// token 校验由 `Authed` extractor 完成（401），handler 只关心业务。
 pub async fn config_page_handler(
+    _: crate::state::Authed,
     State(state): State<AppState>,
-    Query(q): Query<TokenQuery>,
 ) -> Result<Html<String>, axum::http::StatusCode> {
-    if q.t != state.token {
-        return Err(axum::http::StatusCode::UNAUTHORIZED);
-    }
-    let theme = state.theme.lock().unwrap().clone();
+    let theme = state.theme.lock().clone();
     let html = CONFIG_HTML.replace(
         "data-theme=\"__THEME__\"",
         &format!("data-theme=\"{}\"", theme),
@@ -174,12 +171,9 @@ pub async fn config_page_handler(
 
 /// `GET /api/config?t=<token>` → 当前生效配置 JSON。
 pub async fn get_config_handler(
+    _: crate::state::Authed,
     State(state): State<AppState>,
-    Query(q): Query<TokenQuery>,
 ) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
-    if q.t != state.token {
-        return Err(axum::http::StatusCode::UNAUTHORIZED);
-    }
     Ok(Json(json!({
         "addr": state.addr,
         "port": state.port,
@@ -188,8 +182,8 @@ pub async fn get_config_handler(
         "max_size": state.max_size,
         "token": state.token,
         "prefer_ip": state.prefer_ip,
-        "theme": *state.theme.lock().unwrap(),
-        "mouse_sensitivity": *state.mouse_sensitivity.lock().unwrap(),
+        "theme": *state.theme.lock(),
+        "mouse_sensitivity": *state.mouse_sensitivity.lock(),
     })))
 }
 
@@ -201,14 +195,11 @@ pub async fn get_config_handler(
 /// state.token 是不可变 String，后端真正鉴权还是用旧 token，前端拿新 token fetch 会 401，
 /// 而托盘菜单 URL 也不会更新。统一重启生效反而消除这种「前端 token 跟后端不同步」的 bug。
 pub async fn set_config_handler(
-    State(state): State<AppState>,
-    Query(q): Query<TokenQuery>,
+    _: crate::state::Authed,
+    State(_state): State<AppState>,
     Json(payload): Json<Config>,
 ) -> Response {
     use axum::http::StatusCode;
-    if q.t != state.token {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
     if let Err(e) = validate(&payload) {
         return (
             StatusCode::BAD_REQUEST,
@@ -234,14 +225,11 @@ pub async fn set_config_handler(
 /// 持久化策略：load 当前文件 → 覆盖 theme 字段 → save。这样不会丢失其他字段
 /// （前端切 theme 时不需要把所有字段都 POST 回来）。
 pub async fn set_theme_handler(
+    _: crate::state::Authed,
     State(state): State<AppState>,
-    Query(q): Query<TokenQuery>,
     Json(payload): Json<serde_json::Value>,
 ) -> Response {
     use axum::http::StatusCode;
-    if q.t != state.token {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
     let raw = payload
         .get("theme")
         .and_then(|v| v.as_str())
@@ -257,7 +245,7 @@ pub async fn set_theme_handler(
         }
     };
     // live apply：改 state，所有后续 ws server_info 推送都会带新 theme
-    *state.theme.lock().unwrap() = theme.clone();
+    *state.theme.lock() = theme.clone();
     // 持久化：保留文件里其他字段，只覆盖 theme
     let mut cfg = load();
     cfg.theme = Some(theme.clone());
@@ -279,14 +267,11 @@ pub async fn set_theme_handler(
 /// 之所以 live-apply 而不是走标准 /api/config 重启路径：灵敏度是触控板手感偏好，
 /// 调一次要求重启会让用户反复试值时极其烦躁。前端 range slider onchange 触发即可。
 pub async fn set_mouse_sensitivity_handler(
+    _: crate::state::Authed,
     State(state): State<AppState>,
-    Query(q): Query<TokenQuery>,
     Json(payload): Json<serde_json::Value>,
 ) -> Response {
     use axum::http::StatusCode;
-    if q.t != state.token {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
     let raw = match payload.get("mouse_sensitivity").and_then(|v| v.as_f64()) {
         Some(v) => v,
         None => {
@@ -305,7 +290,7 @@ pub async fn set_mouse_sensitivity_handler(
             .into_response();
     }
     let sens = raw as f32;
-    *state.mouse_sensitivity.lock().unwrap() = sens;
+    *state.mouse_sensitivity.lock() = sens;
     let mut cfg = load();
     cfg.mouse_sensitivity = Some(sens);
     if let Err(e) = save(&cfg) {
@@ -318,10 +303,10 @@ pub async fn set_mouse_sensitivity_handler(
     Json(json!({"ok": true, "mouse_sensitivity": sens})).into_response()
 }
 
+/// `GET /api/list_dir?t=<token>&path=<path>` 的查询参数。
+/// token 校验由 `Authed` 完成，这里只剩业务字段。
 #[derive(Deserialize)]
 pub struct ListDirQuery {
-    #[serde(flatten)]
-    pub token: TokenQuery,
     pub path: Option<String>,
 }
 
@@ -334,13 +319,11 @@ pub struct ListDirQuery {
 /// 不存在的路径返回 404，非目录返回 400。不做路径沙箱——token 已 gating，
 /// 持有者本来就是机器主人。
 pub async fn list_dir_handler(
-    State(state): State<AppState>,
+    _: crate::state::Authed,
+    State(_state): State<AppState>,
     Query(q): Query<ListDirQuery>,
 ) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
     use axum::http::StatusCode;
-    if q.token.t != state.token {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
     let raw = q.path.unwrap_or_default();
 
     // 顶层入口视图：Windows 列盘符，Unix 直接给 `/`
@@ -441,13 +424,9 @@ fn list_roots() -> Vec<serde_json::Value> {
 ///    ExitProcess——所以 spawn 必须在 tray handler 里，main 中 run() 之后的代码不会执行
 /// 4. 新进程 probe_port 重试 ~2 秒，等老进程释放端口后绑定成功
 pub async fn restart_handler(
+    _: crate::state::Authed,
     State(state): State<AppState>,
-    Query(q): Query<TokenQuery>,
 ) -> Response {
-    use axum::http::StatusCode;
-    if q.t != state.token {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
     // 给 tray 发 RestartRequested，tray handler 负责真正 spawn 新进程。
     // 同时让 server 优雅退出（释放 listener，给新进程让端口）。
     let _ = state.tray_proxy.send_event(crate::tray::UserEvent::RestartRequested);
@@ -458,12 +437,9 @@ pub async fn restart_handler(
 /// `GET /api/local_ips?t=<token>` → LAN 接口列表（IP + 掩码 + CIDR + prefer 前缀）。
 /// 前端用真实子网信息展示，比之前按 IP 字符串前两段硬切更准。
 pub async fn local_ips_handler(
-    State(state): State<AppState>,
-    Query(q): Query<TokenQuery>,
+    _: crate::state::Authed,
+    State(_state): State<AppState>,
 ) -> Result<Json<Vec<serde_json::Value>>, axum::http::StatusCode> {
-    if q.t != state.token {
-        return Err(axum::http::StatusCode::UNAUTHORIZED);
-    }
     let interfaces = net::list_lan_interfaces()
         .into_iter()
         .map(|li| {
@@ -481,10 +457,10 @@ pub async fn local_ips_handler(
     Ok(Json(interfaces))
 }
 
+/// `GET /api/check_port?t=<token>&addr=<addr>&port=<port>` 的查询参数。
+/// token 校验由 `Authed` 完成。
 #[derive(Deserialize)]
 pub struct CheckPortQuery {
-    #[serde(flatten)]
-    pub token: TokenQuery,
     pub addr: String,
     pub port: u16,
 }
@@ -496,12 +472,10 @@ pub struct CheckPortQuery {
 /// 视为「可用」——我们自己在用，不算冲突。否则用户在配置页里 focus/blur
 /// 端口字段（没改任何东西）就会提示「已被占用」。
 pub async fn check_port_handler(
+    _: crate::state::Authed,
     State(state): State<AppState>,
     Query(q): Query<CheckPortQuery>,
 ) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
-    if q.token.t != state.token {
-        return Err(axum::http::StatusCode::UNAUTHORIZED);
-    }
     if q.port == state.port {
         return Ok(Json(json!({"free": true, "self": true})));
     }

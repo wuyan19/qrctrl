@@ -6,14 +6,14 @@
 
 use std::borrow::Cow;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use base64::{engine::general_purpose, Engine as _};
 use image::ImageEncoder;
 
-/// 共享剪贴板句柄。Arc<Mutex<...>> 包裹，
-/// macOS 上 arboard::Clipboard 仅 Send 不 Sync。
-pub type ClipboardHandle = Arc<Mutex<arboard::Clipboard>>;
+/// 共享剪贴板句柄。Arc<parking_lot::Mutex<...>> 包裹，
+/// macOS 上 arboard::Clipboard 仅 Send 不 Sync。用 parking_lot 避免 std Mutex 的 poison panic。
+pub type ClipboardHandle = Arc<parking_lot::Mutex<arboard::Clipboard>>;
 
 /// 像素总数上限（约 4000 万像素 ≈ 160 MB RGBA）。
 const MAX_PIXELS: usize = 40_000_000;
@@ -56,7 +56,7 @@ pub fn error_code(e: &CbError) -> &'static str {
 /// 创建共享剪贴板句柄。
 pub fn new_handle() -> Result<ClipboardHandle, String> {
     let cb = arboard::Clipboard::new().map_err(|e| format!("剪贴板初始化失败: {}", e))?;
-    Ok(Arc::new(Mutex::new(cb)))
+    Ok(Arc::new(parking_lot::Mutex::new(cb)))
 }
 
 fn map_err(e: arboard::Error) -> CbError {
@@ -111,7 +111,7 @@ pub fn decode_base64(s: &str) -> Result<Vec<u8>, CbError> {
 
 /// 读剪贴板文本。返回 Ok(None) 表示空 / 无文本格式。
 pub fn read_text(h: &ClipboardHandle) -> Result<Option<String>, CbError> {
-    let mut cb = h.lock().map_err(|e| CbError::Unknown(format!("lock: {}", e)))?;
+    let mut cb = h.lock();
     match cb.get_text() {
         Ok(s) => Ok(Some(s)),
         Err(arboard::Error::ContentNotAvailable) => Ok(None),
@@ -125,7 +125,7 @@ pub fn read_text(h: &ClipboardHandle) -> Result<Option<String>, CbError> {
 /// 资源管理器复制图片）→ 剪贴板位图（截图工具、应用内复制图片）。
 /// 直接读位图在「复制文件」场景下拿到的是占位图标，所以必须先看文件列表。
 pub fn read_image_png_base64(h: &ClipboardHandle) -> Result<Option<(String, String)>, CbError> {
-    let mut cb = h.lock().map_err(|e| CbError::Unknown(format!("lock: {}", e)))?;
+    let mut cb = h.lock();
 
     // 优先：检查文件列表。复制图片文件场景下，剪贴板里是文件引用而不是位图。
     // 直接 get_image() 会返回系统生成的占位图标（小尺寸），不是真实图片内容。
@@ -157,7 +157,7 @@ pub fn read_image_png_base64(h: &ClipboardHandle) -> Result<Option<(String, Stri
 /// 把图片字节（任意格式）解码后写入剪贴板。
 pub fn write_image_from_bytes(handle: &ClipboardHandle, bytes: &[u8]) -> Result<(), CbError> {
     let (w, h, rgba) = decode_bytes_to_rgba(bytes)?;
-    let mut cb = handle.lock().map_err(|e| CbError::Unknown(format!("lock: {}", e)))?;
+    let mut cb = handle.lock();
     cb.set_image(arboard::ImageData {
         width: w,
         height: h,
@@ -184,7 +184,7 @@ const MAX_FILE_LIST: usize = 20;
 /// 应该走「🖼 拉图片」专用通道。否则像 .ico / .bmp / .tiff / .svg 这类
 /// 被识别为图片但用户期望按文件下载的扩展名会被错误跳过。
 pub fn read_file_list(h: &ClipboardHandle) -> Result<Vec<FileMeta>, CbError> {
-    let mut cb = h.lock().map_err(|e| CbError::Unknown(format!("lock: {}", e)))?;
+    let mut cb = h.lock();
     let paths = match cb.get().file_list() {
         Ok(p) => p,
         Err(_) => return Ok(Vec::new()),

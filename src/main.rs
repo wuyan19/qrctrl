@@ -2,6 +2,7 @@
 // debug 模式保留 console，方便开发时直接看 println!/panic 信息。
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
+mod backend;
 mod clipboard;
 mod config;
 mod file_transfer;
@@ -15,7 +16,7 @@ mod ws;
 
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{extract::State, response::Html, routing::{get, post}, Router};
@@ -115,6 +116,24 @@ fn attach_parent_console() -> bool {
     }
 }
 
+/// 初始化 tracing 日志。
+///
+/// 默认 INFO 级别；`RUST_LOG` 环境变量可覆盖（例：`RUST_LOG=qrctrl=debug`）。
+/// 不显式传 directive 时用 `info`（覆盖 tracing-subscriber 默认的 WARN，让业务日志可见）。
+///
+/// 双击启动（无 console）时 tracing 的 fmt layer 输出到 stdout 会失效，
+/// 但 init 本身不会失败——后续可在 tray 错误处理里把 ERROR 写文件兜底。
+fn init_logging() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_timer(tracing_subscriber::fmt::time::uptime())
+        .with_ansi(false)
+        .init();
+}
+
 fn resolve_name(cli_name: &Option<String>) -> String {
     if let Some(n) = cli_name {
         if !n.trim().is_empty() {
@@ -205,6 +224,11 @@ fn main() {
     #[cfg(not(target_os = "windows"))]
     let has_console = std::io::IsTerminal::is_terminal(&std::io::stdout());
 
+    // 初始化 tracing：默认 INFO 级别，可用 RUST_LOG 环境变量覆盖（如 RUST_LOG=debug）。
+    // 必须在 attach_parent_console 之后——否则 Windows GUI 子系统下 stdout 还没接上，
+    // 早期日志全丢。tracing::subscriber 在进程级全局生效，后续线程（server/tray）自动继承。
+    init_logging();
+
     let cli = Cli::parse();
 
     // 三层配置合并：built-in default → config.toml → CLI args（CLI 永远赢）。
@@ -245,7 +269,7 @@ fn main() {
     let port = probe_port(&addr, cli.port.or(file_cfg.port));
     if cli.port.is_none() && file_cfg.port.is_none() && port != 8080 {
         // 双击启动时无 console，这行只在 CLI 启动可见；QR 码本身已含正确端口
-        println!("[qrctrl] 默认端口 8080 被占用，已自动改用 {}", port);
+        tracing::info!("默认端口 8080 被占用，已自动改用 {}", port);
     }
 
     // 收集局域网候选 IP，应用 --prefer-ip 过滤（若提供）
@@ -257,7 +281,7 @@ fn main() {
     let url = match candidates.first() {
         Some(ip) => format!("http://{}:{}/?t={}", ip, port, token),
         None => {
-            eprintln!("[警告] 未检测到局域网 IPv4，回退到 localhost");
+            tracing::warn!("未检测到局域网 IPv4，回退到 localhost");
             format!("http://localhost:{}/?t={}", port, token)
         }
     };
@@ -315,9 +339,9 @@ fn main() {
     // 直接 ExitProcess，macOS/Linux 也类似，run() 之后的代码不会执行。
     // 所以「立即重启」的 spawn 新进程逻辑放在 tray::RestartRequested 分支里，
     // 这里只保留 quit 路径的 graceful shutdown 退出兜底（实际几乎跑不到）。
-    println!("[qrctrl] 正在退出...");
+    tracing::info!("正在退出...");
     if server_handle.join().is_err() {
-        eprintln!("[qrctrl] server 线程 panic，强制退出");
+        tracing::error!("server 线程 panic，强制退出");
         std::process::exit(1);
     }
 }
@@ -328,7 +352,7 @@ fn main() {
 /// `set_theme_handler` 在运行时改过）替换占位符。inline `<script>` 会同步把 `"system"`
 /// 解析成 dark/light 应用到 `<html>`，避免 CSS 应用后的 FOUC。
 async fn index_handler(State(state): State<AppState>) -> Html<String> {
-    let theme = state.theme.lock().unwrap().clone();
+    let theme = state.theme.lock().clone();
     let name = escape_html(&state.name);
     let html = INDEX_HTML
         .replace(
@@ -375,8 +399,14 @@ async fn async_main(
         .await
         .unwrap_or_else(|e| panic!("端口 {} 绑定失败：{}", bind_addr, e));
 
+    // 构造输入后端：enigo（键鼠注入）+ arboard（剪贴板）统一包进 EnigoBackend。
+    // AppState 只持有 trait 对象 Arc<dyn InputBackend>，ws::dispatch 据此调度，
+    // 测试时可换成 MockBackend 不接触真实 OS。
     let enigo = Enigo::new(&Settings::default()).expect("Enigo 初始化失败");
     let cb = clipboard::new_handle().expect("剪贴板初始化失败");
+    let backend: backend::DynBackend = Arc::new(
+        backend::EnigoBackend::new(Arc::new(parking_lot::Mutex::new(enigo)), cb),
+    );
     // save_dir 由 main 同步创建，这里无需重复
 
     let registry = file_transfer::TransferRegistry::default();
@@ -396,15 +426,14 @@ async fn async_main(
         addr,
         port,
         prefer_ip,
-        enigo: Arc::new(Mutex::new(enigo)),
-        clipboard: cb,
+        backend,
         save_dir: save_dir.clone(),
         max_size,
         registry,
         shutdown_notify: shutdown_notify.clone(),
         tray_proxy,
-        theme: Arc::new(Mutex::new(theme)),
-        mouse_sensitivity: Arc::new(Mutex::new(mouse_sensitivity)),
+        theme: Arc::new(parking_lot::Mutex::new(theme)),
+        mouse_sensitivity: Arc::new(parking_lot::Mutex::new(mouse_sensitivity)),
     };
 
     let app = Router::new()

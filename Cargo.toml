@@ -24,6 +24,9 @@ dirs = "5"
 tokio-util = { version = "0.7", features = ["io"] }
 mime_guess = "2"
 futures-util = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+parking_lot = "0.12"
 tray-icon = "0.24"
 tao = "0.35"
 softbuffer = "0.4"

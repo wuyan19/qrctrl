@@ -11,8 +11,8 @@
 fn main() {
     let mut res = winres::WindowsResource::new();
     res.set_icon("assets/windows/icon.ico");
-    res.set("FileDescription", "qrctrl — 用手机扫码控制 PC");
-    res.set("ProductName", "qrctrl");
+    res.set("FileDescription", "QR Control — 用手机扫码控制 PC");
+    res.set("ProductName", "QR Control");
     // LegalCopyright 留空也能让 Windows 资源段合法；按需补充。
     if let Err(e) = res.compile() {
         // 编译失败不要 panic：CI 上偶尔有缺 rc.exe 的环境，CI 仍能产出可运行的二进制，

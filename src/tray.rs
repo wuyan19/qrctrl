@@ -124,7 +124,7 @@ pub fn run_tray_event_loop(
                 if state.auto_show_qr {
                     match open_qr_window(target, &state.url) {
                         Ok(w) => qr_window = Some(w),
-                        Err(e) => eprintln!("[tray] 自动显示二维码失败: {}", e),
+                        Err(e) => tracing::warn!("自动显示二维码失败: {}", e),
                     }
                 }
             }
@@ -142,7 +142,7 @@ pub fn run_tray_event_loop(
                     } else {
                         match open_qr_window(target, &state.url) {
                             Ok(w) => qr_window = Some(w),
-                            Err(e) => eprintln!("[tray] 显示二维码失败: {}", e),
+                            Err(e) => tracing::warn!("显示二维码失败: {}", e),
                         }
                     }
                 } else if e.id == open_save_dir_i.id() {
@@ -183,7 +183,7 @@ pub fn run_tray_event_loop(
                 // env::set_var 在 2024 edition 是 unsafe，改用 Command::env 注入子进程
                 cmd.env("QRCTRL_RESTART_CHILD", "1");
                 if let Err(e) = cmd.spawn() {
-                    eprintln!("[tray] 重启 spawn 失败（{}），请手动启动", e);
+                    tracing::error!("重启 spawn 失败（{}），请手动启动", e);
                 }
                 shutdown_notify.notify_waiters();
                 *control_flow = ControlFlow::Exit;
@@ -203,7 +203,7 @@ pub fn run_tray_event_loop(
                 if let Some(w) = qr_window.as_mut() {
                     if window_id == w.window.id() {
                         if let Err(e) = draw_qr(w) {
-                            eprintln!("[tray] QR 重绘失败: {}", e);
+                            tracing::warn!("QR 重绘失败: {}", e);
                         }
                     }
                 }
@@ -335,7 +335,7 @@ fn open_in_file_manager(path: &std::path::Path) {
     let program = "xdg-open";
 
     if let Err(e) = std::process::Command::new(program).arg(path).spawn() {
-        eprintln!("[tray] 打开 {} 失败: {}", path.display(), e);
+        tracing::warn!("打开 {} 失败: {}", path.display(), e);
     }
 }
 
@@ -348,7 +348,7 @@ fn open_url_in_browser(url: &str) {
     #[cfg(target_os = "macos")]
     {
         if let Err(e) = std::process::Command::new("open").arg(url).spawn() {
-            eprintln!("[tray] 打开 {} 失败: {}", url, e);
+            tracing::warn!("打开 {} 失败: {}", url, e);
         }
     }
     #[cfg(target_os = "windows")]
@@ -362,13 +362,13 @@ fn open_url_in_browser(url: &str) {
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
         {
-            eprintln!("[tray] 打开 {} 失败: {}", url, e);
+            tracing::warn!("打开 {} 失败: {}", url, e);
         }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         if let Err(e) = std::process::Command::new("xdg-open").arg(url).spawn() {
-            eprintln!("[tray] 打开 {} 失败: {}", url, e);
+            tracing::warn!("打开 {} 失败: {}", url, e);
         }
     }
 }

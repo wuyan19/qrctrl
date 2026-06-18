@@ -7,11 +7,11 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, StatusCode};
 use axum::response::Response;
 use futures_util::StreamExt;
@@ -19,7 +19,7 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
-use crate::state::{AppState, TokenQuery};
+use crate::state::AppState;
 
 const ENTRY_TTL: Duration = Duration::from_secs(300);
 
@@ -39,48 +39,39 @@ pub struct DownloadMeta {
 
 #[derive(Clone, Default)]
 pub struct TransferRegistry {
-    uploads: Arc<Mutex<HashMap<String, UploadMeta>>>,
-    downloads: Arc<Mutex<HashMap<String, DownloadMeta>>>,
+    uploads: Arc<parking_lot::Mutex<HashMap<String, UploadMeta>>>,
+    downloads: Arc<parking_lot::Mutex<HashMap<String, DownloadMeta>>>,
 }
 
 impl TransferRegistry {
     pub fn register_upload(&self, meta: UploadMeta) -> String {
         let id = Uuid::new_v4().to_string();
-        let mut map = self.uploads.lock().expect("uploads lock poisoned");
-        map.insert(id.clone(), meta);
+        // parking_lot::lock() 不返回 Result（不 poison），无需 unwrap。
+        self.uploads.lock().insert(id.clone(), meta);
         id
     }
 
     pub fn register_download(&self, meta: DownloadMeta) -> String {
         let id = Uuid::new_v4().to_string();
-        let mut map = self.downloads.lock().expect("downloads lock poisoned");
-        map.insert(id.clone(), meta);
+        self.downloads.lock().insert(id.clone(), meta);
         id
     }
 
     pub fn take_upload(&self, id: &str) -> Option<UploadMeta> {
-        self.uploads
-            .lock()
-            .expect("uploads lock poisoned")
-            .remove(id)
+        self.uploads.lock().remove(id)
     }
 
     pub fn take_download(&self, id: &str) -> Option<DownloadMeta> {
-        self.downloads
-            .lock()
-            .expect("downloads lock poisoned")
-            .remove(id)
+        self.downloads.lock().remove(id)
     }
 
     pub fn cleanup_expired(&self) {
         let now = Instant::now();
         self.uploads
             .lock()
-            .expect("uploads lock poisoned")
             .retain(|_, m| now.duration_since(m.created_at) < ENTRY_TTL);
         self.downloads
             .lock()
-            .expect("downloads lock poisoned")
             .retain(|_, m| now.duration_since(m.created_at) < ENTRY_TTL);
     }
 }
@@ -118,14 +109,11 @@ pub fn resolve_conflict(dir: &Path, name: &str) -> PathBuf {
 /// POST /upload/{id}?t=<token>
 /// 流式接收 body 写盘到 save_dir，累计大小超过 max_size 时中断 + 删半成品。
 pub async fn upload_handler(
+    _: crate::state::Authed,
     State(state): State<AppState>,
-    Query(q): Query<TokenQuery>,
     AxumPath(id): AxumPath<String>,
     body: Body,
 ) -> Result<StatusCode, StatusCode> {
-    if q.t != state.token {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
     let meta = state
         .registry
         .take_upload(&id)
@@ -135,7 +123,7 @@ pub async fn upload_handler(
     let mut file = tokio::fs::File::create(&target)
         .await
         .map_err(|e| {
-            eprintln!("[file] 创建文件失败 {}: {}", target.display(), e);
+            tracing::error!("创建文件失败 {}: {}", target.display(), e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
@@ -147,7 +135,7 @@ pub async fn upload_handler(
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[file] 读取流失败: {}", e);
+                tracing::warn!("读取上传流失败: {}", e);
                 err = Some(StatusCode::BAD_REQUEST);
                 break;
             }
@@ -158,7 +146,7 @@ pub async fn upload_handler(
             break;
         }
         if let Err(e) = file.write_all(&chunk).await {
-            eprintln!("[file] 写入失败: {}", e);
+            tracing::error!("写入文件失败: {}", e);
             err = Some(StatusCode::INTERNAL_SERVER_ERROR);
             break;
         }
@@ -171,12 +159,12 @@ pub async fn upload_handler(
     }
 
     if let Err(e) = file.flush().await {
-        eprintln!("[file] flush 失败: {}", e);
+        tracing::error!("flush 文件失败: {}", e);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    println!(
-        "[file] 上传完成: {} (声明 {} / 实际 {} 字节)",
+    tracing::info!(
+        "上传完成: {} (声明 {} / 实际 {} 字节)",
         target.display(),
         meta.size,
         total
@@ -187,13 +175,10 @@ pub async fn upload_handler(
 /// GET /download/{id}?t=<token>
 /// 流式发送文件。Content-Disposition 触发浏览器下载。
 pub async fn download_handler(
+    _: crate::state::Authed,
     State(state): State<AppState>,
-    Query(q): Query<TokenQuery>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Response, StatusCode> {
-    if q.t != state.token {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
     let meta = state
         .registry
         .take_download(&id)
@@ -202,7 +187,7 @@ pub async fn download_handler(
     let file = match tokio::fs::File::open(&meta.path).await {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("[file] 打开文件失败 {}: {}", meta.path.display(), e);
+            tracing::warn!("打开下载文件失败 {}: {}", meta.path.display(), e);
             return Err(StatusCode::NOT_FOUND);
         }
     };
