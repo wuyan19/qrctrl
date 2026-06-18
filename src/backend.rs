@@ -43,6 +43,15 @@ pub enum BackendError {
     Clipboard(clipboard::CbError),
 }
 
+impl std::fmt::Display for BackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackendError::Inject(s) => write!(f, "inject: {}", s),
+            BackendError::Clipboard(e) => write!(f, "clipboard: {}", e),
+        }
+    }
+}
+
 impl BackendError {
     /// 映射到 WS 协议错误码。
     /// 注入失败统一 `inject_failed`；剪贴板失败沿用 CbError 的细粒度错误码。
@@ -103,6 +112,9 @@ pub trait InputBackend: Send + Sync {
     fn write_clipboard_image(&self, bytes: &[u8]) -> Result<(), BackendError>;
     /// 读剪贴板里的文件引用列表。空 Vec 表示无文件。
     fn read_clipboard_files(&self) -> Result<Vec<FileMeta>, BackendError>;
+    /// 把一组文件路径推到剪贴板（`set().file_list()`），文件上传批结束后调用。
+    /// 跟图片上传通道（`write_clipboard_image` → 位图）完全分离。
+    fn push_files_to_clipboard(&self, paths: &[std::path::PathBuf]) -> Result<(), BackendError>;
 
     // ---- trait 对象向下转型（测试用）----
     /// 提供 `Any` 句柄，让测试能把 `dyn InputBackend` downcast 回具体类型（如 MockBackend）
@@ -192,6 +204,10 @@ impl InputBackend for EnigoBackend {
                     })
                     .collect()
             })
+    }
+
+    fn push_files_to_clipboard(&self, paths: &[std::path::PathBuf]) -> Result<(), BackendError> {
+        clipboard::push_files_to_clipboard(&self.clipboard, paths).map_err(BackendError::Clipboard)
     }
 
     #[cfg(test)]

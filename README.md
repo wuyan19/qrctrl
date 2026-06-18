@@ -91,7 +91,7 @@ Enable the **⚡ auto-send** checkbox to transmit automatically after typing pau
 
 ### File transfer (bidirectional)
 
-- **Upload phone → PC**: Pick any file from the phone. It's streamed to the PC over HTTP (`POST /upload/{id}`) into `--save-dir` (default `<download>/qrctrl/`). Single-file size capped by `--max-size`.
+- **Upload phone → PC**: Pick any file from the phone. It's streamed to the PC over HTTP (`POST /upload/{id}`) into `--save-dir` (default `<download>/qrctrl/`). Single-file size capped by `--max-size`. After a batch of uploads finishes, the server pushes every saved file path to the PC clipboard in one shot (like selecting multiple files in Explorer/Finder and pressing Ctrl+C) — Ctrl+V / Cmd+V in a file manager or any file-paste-aware app (Telegram, Discord, Office, …) drops them as files. This is a separate channel from image upload: file upload always yields file references; image upload (`Pick image` / paste screenshot) still writes a bitmap.
 - **Download PC → phone**: Long-press a file link in the panel to download from the PC's save dir.
 
 Files are registered in a transfer registry with expiration; a background task cleans up stale entries every 60 s.
@@ -165,7 +165,7 @@ On macOS the `.app` bundle sets `LSUIElement=true` in its `Info.plist`, so doubl
 - PC runs an HTTP + WebSocket server on the configured `addr:port`. The HTTP layer serves the static control panel at `/` and streams files at `/upload/{id}` + `/download/{id}`.
 - Phone authenticates via a token embedded in the QR code URL.
 - Server pushes `{"type":"server_info","name":"..."}` immediately after WebSocket upgrade — the phone uses this for status / toast text.
-- All other WebSocket messages are JSON with a `type` field (`text` / `get_clipboard_text` / `get_clipboard_image` / `set_clipboard_image` / `upload_start` / `get_file` / `enter` / `tab` / `backspace` / `copy` / `paste` / `mouse_move` / `mouse_click` / `mouse_press` / `mouse_release` / `mouse_scroll`).
+- All other WebSocket messages are JSON with a `type` field (`text` / `get_clipboard_text` / `get_clipboard_image` / `set_clipboard_image` / `set_clipboard_files` / `upload_start` / `get_file` / `enter` / `tab` / `backspace` / `copy` / `paste` / `mouse_move` / `mouse_click` / `mouse_press` / `mouse_release` / `mouse_scroll`).
 - Text injection uses enigo's `text()` method — Unicode-aware, works with any keyboard layout or input method state.
 - Clipboard access via arboard (text + image + file list). On the read path, file references are resolved by reading the underlying file — this matters when the user `Cmd+C`'s a file rather than copying image content directly.
 - Mouse events go through enigo (CGEvent on macOS, SendInput on Windows, XTest on Linux).

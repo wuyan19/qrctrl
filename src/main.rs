@@ -2,6 +2,7 @@
 // debug 模式保留 console，方便开发时直接看 println!/panic 信息。
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
+mod assets;
 mod backend;
 mod clipboard;
 mod config;
@@ -26,8 +27,6 @@ use tokio::sync::Notify;
 
 use crate::state::AppState;
 use crate::tray::TrayState;
-
-const INDEX_HTML: &str = include_str!("../static/index.html");
 
 const DEFAULT_MAX_SIZE: u64 = 10 * 1024 * 1024 * 1024; // 10 GB
 const REGISTRY_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
@@ -354,7 +353,8 @@ fn main() {
 async fn index_handler(State(state): State<AppState>) -> Html<String> {
     let theme = state.theme.lock().clone();
     let name = escape_html(&state.name);
-    let html = INDEX_HTML
+    let html = crate::assets::read_str("index.html")
+        .expect("index.html 编译期嵌入，运行时一定存在")
         .replace(
             "data-theme=\"__THEME__\"",
             &format!("data-theme=\"{}\"", theme),
@@ -438,6 +438,8 @@ async fn async_main(
 
     let app = Router::new()
         .route("/", get(index_handler))
+        .route("/css/{*path}", get(assets::static_handler))
+        .route("/js/{*path}", get(assets::static_handler))
         .route("/ws", get(ws::ws_handler))
         .route("/upload/{id}", post(file_transfer::upload_handler))
         .route("/download/{id}", get(file_transfer::download_handler))

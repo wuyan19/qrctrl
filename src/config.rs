@@ -20,7 +20,6 @@ use serde_json::json;
 use crate::net;
 use crate::state::AppState;
 
-const CONFIG_HTML: &str = include_str!("../static/config.html");
 const ONE_TB: u64 = 1024 * 1024 * 1024 * 1024;
 
 /// 配置文件内容。全部 `Option<T>`，`None` = 未设置（让下层默认生效）。
@@ -162,10 +161,12 @@ pub async fn config_page_handler(
     State(state): State<AppState>,
 ) -> Result<Html<String>, axum::http::StatusCode> {
     let theme = state.theme.lock().clone();
-    let html = CONFIG_HTML.replace(
-        "data-theme=\"__THEME__\"",
-        &format!("data-theme=\"{}\"", theme),
-    );
+    let html = crate::assets::read_str("config.html")
+        .expect("config.html 编译期嵌入，运行时一定存在")
+        .replace(
+            "data-theme=\"__THEME__\"",
+            &format!("data-theme=\"{}\"", theme),
+        );
     Ok(Html(html))
 }
 

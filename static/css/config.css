@@ -1,0 +1,517 @@
+  /* 注意：不要给 body 设 height: 100%，否则在 box-sizing: border-box 下，
+     当内容撑满视口后 padding-bottom 会被挤出 body 边界之外，看起来底部没间距。
+     用 min-height: 100vh（见下方 body 规则）就够了。 */
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--ink);
+    /* 底部留白：PC 端 36px，iPhone 上叠加 safe-area-inset-bottom
+       避免按钮被 home indicator 横条遮挡。 */
+    padding: 32px 20px calc(36px + env(safe-area-inset-bottom, 0px));
+    min-height: 100vh;
+    background-image:
+      radial-gradient(circle at 50% -10%, rgba(255, 179, 71, 0.06) 0%, transparent 50%);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 720px;
+    margin: 0 auto;
+  }
+
+  /* ====== Header / brand ====== */
+  .masthead {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background:
+      linear-gradient(180deg, var(--amber-soft), transparent 60%),
+      var(--panel);
+    padding: 18px 22px;
+    margin-bottom: 24px;
+    position: relative;
+    overflow: hidden;
+  }
+  .masthead::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--amber);
+    opacity: 0.6;
+  }
+  .masthead .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.32em;
+    color: var(--amber);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .masthead h1 {
+    font-family: var(--font-mono);
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--ink);
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .masthead h1 .sep {
+    color: var(--ink-faint);
+    font-weight: 400;
+  }
+  .masthead h1 .module {
+    color: var(--amber);
+  }
+  .masthead .sub {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+    margin-top: 8px;
+    letter-spacing: 0.04em;
+  }
+
+  /* ====== Banner ====== */
+  .banner {
+    padding: 12px 14px;
+    border: 1px solid var(--border-amber);
+    background: linear-gradient(180deg, var(--amber-soft), transparent);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.65;
+    letter-spacing: 0.02em;
+    border-radius: 6px;
+    margin-bottom: 18px;
+    display: none;
+    position: relative;
+  }
+  .banner::before {
+    content: '! NOTE';
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    color: var(--amber);
+    margin-bottom: 6px;
+    font-weight: 700;
+  }
+  .banner.show { display: block; }
+  .banner a { color: var(--amber); word-break: break-all; }
+  .banner .url {
+    display: block;
+    margin-top: 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+  }
+
+  /* ====== Section ====== */
+  .section {
+    margin-bottom: 24px;
+  }
+  .section-title {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--amber);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-weight: 700;
+  }
+  .section-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+  .section-body {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    overflow: hidden;
+  }
+
+  /* ====== Field 行：左 label 右 input ====== */
+  .field {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 16px;
+    align-items: start;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .field:last-child { border-bottom: none; }
+  .field label {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--ink-dim);
+    letter-spacing: 0.02em;
+    padding-top: 11px;
+    text-transform: lowercase;
+  }
+  .field label::before {
+    content: '·';
+    color: var(--amber);
+    margin-right: 6px;
+    font-weight: 700;
+  }
+  .hint {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-faint);
+    margin-top: 6px;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+    grid-column: 2;
+  }
+
+  /* 输入框：暗底 + 边框 */
+  input[type=text], input[type=number], input[type=password], select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 13px;
+    background: var(--bg-elev);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  input::placeholder { color: var(--ink-faint); }
+  input:focus, select:focus {
+    border-color: var(--border-amber);
+    box-shadow: 0 0 0 1px var(--border-amber);
+  }
+  input.invalid {
+    border-color: var(--red);
+    box-shadow: 0 0 0 1px var(--red);
+  }
+  select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--ink-dim) 50%),
+                      linear-gradient(135deg, var(--ink-dim) 50%, transparent 50%);
+    background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: 30px;
+    cursor: pointer;
+  }
+  select:focus {
+    background-image: linear-gradient(45deg, transparent 50%, var(--amber) 50%),
+                      linear-gradient(135deg, var(--amber) 50%, transparent 50%);
+  }
+  option {
+    background: var(--panel);
+    color: var(--ink);
+  }
+
+  /* 字段内的子布局 */
+  .row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+  }
+  .row > input { flex: 1; min-width: 0; }
+  .row > .btn-small { flex: 0 0 auto; }
+
+  .inline-unit {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .inline-unit input { flex: 1; min-width: 0; }
+  .inline-unit select { flex: 0 0 auto; width: auto; min-width: 80px; }
+
+  /* 灵敏度滑块: phosphor terminal 风格 — 细线 track + 琥珀方块 knob + glow */
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    flex: 1;
+    min-width: 0;
+    height: 16px;
+    background: transparent;
+    cursor: pointer;
+    padding: 0;
+    margin: 0;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 2px;
+    background: var(--border-hi);
+    border-radius: 1px;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    margin-top: -7px;
+    width: 16px;
+    height: 16px;
+    background: var(--amber);
+    border: none;
+    border-radius: 2px;
+    box-shadow: 0 0 8px var(--amber-glow);
+    transition: background 0.12s, box-shadow 0.12s;
+  }
+  input[type="range"]:hover::-webkit-slider-thumb {
+    background: var(--amber-hi);
+    box-shadow: 0 0 12px var(--amber-glow);
+  }
+  input[type="range"]:active::-webkit-slider-thumb {
+    background: var(--amber-hi);
+  }
+  input[type="range"]::-moz-range-track {
+    height: 2px;
+    background: var(--border-hi);
+    border-radius: 1px;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: var(--amber);
+    border: none;
+    border-radius: 2px;
+    box-shadow: 0 0 8px var(--amber-glow);
+  }
+  input[type="range"]:hover::-moz-range-thumb {
+    background: var(--amber-hi);
+    box-shadow: 0 0 12px var(--amber-glow);
+  }
+  /* 数值显示: monospace + 琥珀 + 固定宽度避免拖动时布局跳动 */
+  .inline-unit output {
+    flex: 0 0 auto;
+    min-width: 48px;
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--amber);
+    letter-spacing: 0.04em;
+  }
+
+  /* token 行的密码显隐按钮 */
+  .token-row { position: relative; }
+  .token-row .toggle {
+    position: absolute;
+    right: 8px; top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    color: var(--ink-dim);
+    padding: 4px 8px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .token-row .toggle:hover { color: var(--amber); }
+  .token-row input { padding-right: 40px !important; }
+
+  /* warning 提示 */
+  .warning {
+    background: var(--red-soft);
+    border: 1px solid rgba(255, 107, 90, 0.3);
+    color: var(--red);
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    margin-top: 6px;
+    letter-spacing: 0.02em;
+    /* .field 是 140px 1fr 两列网格，warning 必须显式落到第 2 列（input 那列），
+       否则会被自动放进第 1 列（label 列），宽度只占 140px。 */
+    grid-column: 2;
+  }
+  .warning::before {
+    content: '⚠ ';
+    font-weight: 700;
+  }
+
+  /* ====== 底部 actions ====== */
+  .actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+  /* ====== 目录选择模态 ====== */
+  .modal-bg {
+    position: fixed; inset: 0;
+    background: rgba(20, 17, 11, 0.88);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: none;
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-bg.show { display: flex; }
+  .modal {
+    background: var(--panel);
+    border: 1px solid var(--border-amber);
+    border-radius: 8px;
+    width: 90%; max-width: 580px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 12px 60px rgba(0,0,0,0.5), 0 0 40px -10px var(--amber-glow);
+  }
+  .modal-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, var(--amber-soft), transparent);
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    min-height: 32px;
+  }
+  #modal-breadcrumb { display: inline-flex; gap: 2px; align-items: center; }
+  #modal-breadcrumb a {
+    color: var(--ink-dim);
+    cursor: pointer;
+    text-decoration: none;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: background 0.12s, color 0.12s;
+    user-select: none;
+  }
+  #modal-breadcrumb a:hover {
+    background: var(--bg-elev);
+    color: var(--amber);
+  }
+  #modal-breadcrumb a:active {
+    background: var(--panel-hi);
+  }
+  /* 「此电脑」根入口 */
+  #modal-breadcrumb a.root-link {
+    font-weight: 700;
+    color: var(--amber);
+  }
+  #modal-breadcrumb .sep {
+    color: var(--ink-faint);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 0 2px;
+  }
+  .modal-body {
+    flex: 1; overflow-y: auto;
+    padding: 4px 0;
+  }
+  .dir-entry {
+    padding: 12px 16px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--ink);
+    transition: background 0.1s, color 0.1s;
+  }
+  .dir-entry:hover {
+    background: var(--bg-elev);
+    color: var(--amber);
+  }
+  .dir-entry .icon { color: var(--ink-dim); font-size: 14px; }
+  .dir-entry:hover .icon { color: var(--amber); }
+  .dir-entry.empty {
+    color: var(--ink-faint);
+    cursor: default;
+  }
+  .dir-entry.empty:hover {
+    background: transparent;
+    color: var(--ink-faint);
+  }
+  .dir-entry.empty:hover .icon { color: var(--ink-faint); }
+  .modal-footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--bg-elev);
+  }
+  .modal-current {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    letter-spacing: 0.02em;
+  }
+  .modal-actions { display: flex; gap: 8px; }
+  #modal-select {
+    background: var(--amber);
+    color: var(--bg);
+    border-color: var(--amber);
+    font-weight: 700;
+  }
+  #modal-select:hover {
+    background: var(--amber-hi);
+    color: var(--bg);
+    border-color: var(--amber-hi);
+  }
+
+  /* ====== 通用确认模态（替代 window.confirm）====== */
+  .confirm-modal {
+    width: 90%;
+    max-width: 420px;
+    max-height: none;
+  }
+  .confirm-modal .modal-header {
+    overflow: visible;
+    white-space: normal;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--amber);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .confirm-body {
+    padding: 20px 16px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--ink-dim);
+  }
+  /* 确认模态的破坏性按钮：.btn-small 尺寸 + 红色语义 */
+  .confirm-modal .btn-confirm {
+    color: var(--red);
+    border-color: rgba(255, 107, 90, 0.4);
+  }
+  .confirm-modal .btn-confirm:hover {
+    background: var(--red-soft);
+    border-color: var(--red);
+  }
+  .confirm-modal .modal-actions { width: 100%; justify-content: flex-end; }
+
+  /* ====== 窄屏响应 ====== */
+  @media (max-width: 600px) {
+    body { padding: 16px 12px calc(28px + env(safe-area-inset-bottom, 0px)); }
+    .field {
+      grid-template-columns: 1fr;
+      gap: 6px;
+      padding: 12px 14px;
+    }
+    .field label { padding-top: 0; }
+    .hint, .warning { grid-column: 1; }
+    .masthead h1 { font-size: 18px; }
+    .actions { flex-direction: column; }
+    .btn-primary, .btn-secondary, .btn-warning {
+      flex: 1;
+      width: 100%;
+    }
+  }

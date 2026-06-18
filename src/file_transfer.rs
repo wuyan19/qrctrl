@@ -14,7 +14,9 @@ use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, StatusCode};
 use axum::response::Response;
+use axum::Json;
 use futures_util::StreamExt;
+use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
@@ -108,12 +110,20 @@ pub fn resolve_conflict(dir: &Path, name: &str) -> PathBuf {
 
 /// POST /upload/{id}?t=<token>
 /// 流式接收 body 写盘到 save_dir，累计大小超过 max_size 时中断 + 删半成品。
+/// 响应返回实际保存的文件名（可能与上传时的 name 不同——`resolve_conflict` 重名时会加 UUID 后缀），
+/// 前端收集一批上传的所有 name，批结束后用 WS `set_clipboard_files` 一次性推剪贴板。
+#[derive(Serialize)]
+pub struct UploadResponse {
+    /// 实际落盘的文件名（可能与上传 name 不同——重名时加 UUID 后缀）。
+    pub name: String,
+}
+
 pub async fn upload_handler(
     _: crate::state::Authed,
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
     body: Body,
-) -> Result<StatusCode, StatusCode> {
+) -> Result<Json<UploadResponse>, StatusCode> {
     let meta = state
         .registry
         .take_upload(&id)
@@ -169,7 +179,16 @@ pub async fn upload_handler(
         meta.size,
         total
     );
-    Ok(StatusCode::OK)
+
+    // 实际落盘文件名（重名时 resolve_conflict 会加 UUID 后缀）。前端收集后通过
+    // WS `set_clipboard_files` 一次性推剪贴板，不在 upload 里推（避免多文件互相覆盖）。
+    let saved_name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(UploadResponse { name: saved_name }))
 }
 
 /// GET /download/{id}?t=<token>

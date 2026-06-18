@@ -40,6 +40,9 @@ enum Command {
     GetClipboardText,
     GetClipboardImage,
     SetClipboardImage { data: String },
+    /// 文件上传批结束后，前端把收集到的实际落盘文件名发回来，server 在 save_dir 下解析
+    /// 路径后用 set().file_list() 一次推到剪贴板。不存在的 name 静默跳过。
+    SetClipboardFiles { names: Vec<String> },
     UploadStart { name: String, size: u64, mime: String },
     GetFile,
     Enter,
@@ -127,6 +130,27 @@ async fn dispatch(state: &AppState, raw: &str) -> String {
                 move |b| {
                     let bytes = clipboard::decode_base64(&data)?;
                     b.write_clipboard_image(&bytes)
+                },
+                |_| ok_json(),
+            )
+            .await
+        }
+        Command::SetClipboardFiles { names } => {
+            let save_dir = state.save_dir.clone();
+            spawn_block(
+                backend.clone(),
+                move |b| {
+                    // 前端只传文件名（绝对路径不暴露给浏览器），server 在 save_dir 下解析。
+                    // 过滤掉不存在的（前端传错名 / 文件被外部删 / 旧批残留），剩下的推剪贴板。
+                    let paths: Vec<std::path::PathBuf> = names
+                        .iter()
+                        .map(|n| save_dir.join(n))
+                        .filter(|p| p.is_file())
+                        .collect();
+                    if paths.is_empty() {
+                        return Ok(());
+                    }
+                    b.push_files_to_clipboard(&paths)
                 },
                 |_| ok_json(),
             )
@@ -703,6 +727,12 @@ mod tests {
             } else {
                 Ok(Vec::new())
             }
+        }
+        fn push_files_to_clipboard(
+            &self,
+            _paths: &[std::path::PathBuf],
+        ) -> Result<(), BackendError> {
+            Ok(())
         }
 
         fn as_any(&self) -> &dyn std::any::Any {

@@ -178,6 +178,18 @@ pub struct FileMeta {
 /// 多文件拉取的上限，避免剪贴板里有几百个文件时协议炸 + 手机端列表巨长。
 const MAX_FILE_LIST: usize = 20;
 
+/// 把一组文件路径推到剪贴板，让 PC 上 Ctrl+V 像在资源管理器里 Ctrl+C 多选文件一样粘出。
+///
+/// 走 `set().file_list()`，跟「图片上传」通道（`SetClipboardImage` → 位图）完全分离——
+/// 上传文件就是文件引用，上传图片（独立按钮）就是位图，两条线不互相干扰。
+pub fn push_files_to_clipboard(h: &ClipboardHandle, paths: &[PathBuf]) -> Result<(), CbError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut cb = h.lock();
+    cb.set().file_list(paths).map_err(map_err)
+}
+
 /// 读剪贴板里的文件引用，返回所有文件（最多 MAX_FILE_LIST 个）。空 Vec 表示无文件。
 ///
 /// 不按扩展名过滤——用户点「📎 拉文件」就是想拿到原文件本身；想要图片预览
