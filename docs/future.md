@@ -1,8 +1,8 @@
 # 未来扩展设计草稿
 
-本文档汇总 **尚未实现** 的功能设计。`research.md` 和 `research2.md` 中已落地的部分已删除，只保留仍在 roadmap 上的内容。
+本文档汇总 **尚未实现** 的功能设计。`research.md` / `research2.md` / `research-update.md` 中已落地的部分已删除，只保留仍在 roadmap 上的内容。
 
-当前已实现的能力一览（用于对照）：文本注入、双向文本/图片剪贴板、双向任意文件传输（PC→手机走 `Cmd+C` 文件 + `GetFile`；手机→PC 走 `/upload`）、鼠标移动/点击/tap-tap-drag/滚轮、Enter/Tab/Backspace/Copy/Paste、JSON 协议、`--token` / `--prefer-ip` / `--save-dir` / `--max-size`、系统托盘 + GUI 子系统后台运行。
+当前已实现的能力一览（用于对照）：文本注入、双向文本/图片剪贴板、双向任意文件传输（PC→手机走 `Cmd+C` 文件 + `GetFile`；手机→PC 走 `/upload`）、鼠标移动/点击/tap-tap-drag/滚轮、Enter/Tab/Backspace/Copy/Paste、JSON 协议、`--token` / `--prefer-ip` / `--save-dir` / `--max-size`、系统托盘 + GUI 子系统后台运行、浏览器配置页、**在线升级**（GitHub Releases + sha256 + minisign 签名，Windows/Linux 替换二进制 / macOS 整包替换 .app，安装完成自动重启；仅手动检查、可跳过版本，v0.10.0 起）。
 
 ---
 
@@ -198,3 +198,12 @@ struct ImageContent {
 2. **TLS（如出现远程使用需求）** —— 优先 Tailscale 而非自签
 3. **宏按钮** —— 用户体验提升
 4. **Metadata + Blob 重构** —— 仅当剪贴板历史/多设备同步成为真实需求
+
+---
+
+## 六、在线升级残项（P2）
+
+P0（更新全链路）与 P1（minisign 签名）已在 v0.10.0 上线并完成 Windows 真机闭环验证。剩余增强：
+
+- **手机端更新横幅**：ws `server_info` 已带 `version` 字段；PC 检查到新版本后向已连接的手机推 `update_available` 事件，手机端状态栏显示「PC 端有新版本」（点击仅提示去 PC 配置页操作，手机端不参与安装）。
+- **新版本 crash 自动回滚**：当前替换失败会就地回滚，但「新版本起来就崩」要用户手动重下。方案：安装时保留旧版本备份 + 启动时写健康标记（正常 serve 后清除）；下次启动发现标记未清则自动回滚备份，防 crash 死循环。

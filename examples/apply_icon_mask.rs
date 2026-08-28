@@ -40,13 +40,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("[apply_icon_mask] 源图尺寸:{}x{},应用 n={} squircle mask", w, h, N);
 
-    // 备份原方版到 icon.square.png,方便后续重做 mask 时拿原版
-    let backup = Path::new(&manifest_dir)
-        .join("assets")
-        .join("icon.square.png");
-    std::fs::copy(&src, &backup)?;
-    println!("[apply_icon_mask] 原方版备份到 {}", backup.display());
-
+    // 覆盖写回前不做本地备份——原方版靠 git 历史找回（icon.png 未提交前跑本工具
+    // 的话请自行留底）。
     let masked = apply_squircle(&rgba);
     masked.save(&src)?;
     println!("[apply_icon_mask] 已写回 {}", src.display());
