@@ -128,6 +128,32 @@
   </div>
 </div>
 
+<!-- ============ 更新 ============ -->
+<!-- 状态由 /api/update/status 驱动（update.rs 的 UpdatePhase，tag = "state"）。
+     单行极简布局：按钮、状态文案、更新日志链接、下载进度条同处一个 flex 行，
+     按状态互斥显隐（下载时按钮隐藏只留进度条）。 -->
+<div class="section" id="update-section">
+  <div class="section-title">Update</div>
+  <div class="section-body">
+    <div class="field">
+      <label>update</label>
+      <div class="update-row">
+        <button type="button" class="btn-small" id="update-check-btn">检查更新</button>
+        <button type="button" class="btn-small btn-primary-small" id="update-install-btn" hidden>安装</button>
+        <button type="button" class="btn-small" id="update-skip-btn" hidden>跳过此版本</button>
+        <button type="button" class="btn-small btn-primary-small" id="update-restart-btn" hidden>重启以完成更新</button>
+        <span class="update-note" id="update-note"></span>
+        <a id="update-notes-link" class="update-notes-link" target="_blank" rel="noopener" hidden>更新日志</a>
+        <div class="update-progress" id="update-progress" hidden>
+          <div class="update-progress-track"><div class="update-progress-fill" id="update-progress-fill"></div></div>
+          <span class="update-progress-text" id="update-progress-text"></span>
+        </div>
+      </div>
+      <div class="hint">从 GitHub Releases 检查并安装新版本。</div>
+    </div>
+  </div>
+</div>
+
 <div class="actions">
   <button type="button" class="btn-primary" id="save-btn">保存</button>
   <a class="btn-secondary" id="back-link">返回控制台</a>

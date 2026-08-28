@@ -84,3 +84,152 @@ jobs:
             target/${{ matrix.target }}/release/${{ matrix.asset_name }}.app.zip
           name: qrctrl ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           draft: true
+
+  # 更新清单：等四个平台的资产全部上传后，从 draft release 下载它们计算
+  # sha256 + minisign 签名，拼出信封式 update-manifest.json（{payload, signature}）
+  # 再传回同一个 release。客户端（src/update.rs）验签后才解析 payload。
+  # 平台 key 与 update.rs 的 platform_key() 是硬约定，两边改名必须同步。
+  # 注意：draft release 不会被 releases/latest 命中——发布后必须手动 publish，
+  # 否则所有已安装的客户端都查不到这次更新。
+  manifest:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 与 release job 相同的系统依赖：cargo build --example 对 [dependencies]
+      # 是全图编译（不做 use 剪枝），sign_update / verify_manifest 会连带编译
+      # enigo / tao / tray-icon，其 build 脚本探测 GTK/X11，缺包直接编译失败。
+      # ubuntu-latest（24.04）镜像已不带这些 dev 包。
+      - name: Install system dependencies (Linux)
+        run: sudo apt-get update && sudo apt-get install -y libxtst-dev libx11-dev libxdo-dev libgtk-3-dev libayatana-appindicator3-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Resolve tag
+        id: tag
+        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Cargo.toml version must match tag
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          CARGO_VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          TAG_VER="${TAG#v}"
+          if [ "$CARGO_VER" != "$TAG_VER" ]; then
+            echo "::error::Cargo.toml version ($CARGO_VER) 与 tag ($TAG_VER) 不一致——manifest 版本号取自 tag，会让客户端版本比较错乱"
+            exit 1
+          fi
+
+      # 签名是强制步骤：secrets 缺失直接 fail（无签名的 manifest 会被客户端拒绝，
+      # 静默跳过只会把失败推迟到用户端）。口令经临时文件而非 argv 传给签名工具
+      # ——GitHub 的 secret 自动 redaction 不覆盖子进程 argv 形态。
+      - name: Materialize signing key
+        env:
+          UPDATE_MINISIGN_KEY: ${{ secrets.UPDATE_MINISIGN_KEY }}
+          UPDATE_MINISIGN_PASSWORD: ${{ secrets.UPDATE_MINISIGN_PASSWORD }}
+        run: |
+          if [ -z "$UPDATE_MINISIGN_KEY" ]; then
+            echo "::error::缺少 secret UPDATE_MINISIGN_KEY。生成密钥对：cargo run --example keygen_update -- --password=<口令>，然后把 .sign/minisign.key 全文和口令分别配到 UPDATE_MINISIGN_KEY / UPDATE_MINISIGN_PASSWORD"
+            exit 1
+          fi
+          if [ -z "$UPDATE_MINISIGN_PASSWORD" ]; then
+            echo "::error::缺少 secret UPDATE_MINISIGN_PASSWORD（即 .sign/minisign.pwd 的口令；空口令也需显式配空字符串）"
+            exit 1
+          fi
+          printf '%s' "$UPDATE_MINISIGN_KEY" > "$HOME/.qrctrl-update.key"
+          printf '%s' "$UPDATE_MINISIGN_PASSWORD" > "$HOME/.qrctrl-update.pwd"
+          chmod 600 "$HOME/.qrctrl-update.key" "$HOME/.qrctrl-update.pwd"
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'qrctrl-*' --dir assets
+
+      - name: Build signing tool
+        run: cargo build --release --example sign_update
+
+      - name: Build signed update-manifest.json
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          python3 - << 'EOF'
+          import hashlib, json, os, subprocess
+
+          tag = os.environ["TAG"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          sign_tool = "target/release/examples/sign_update"
+          key_path = os.path.expanduser("~/.qrctrl-update.key")
+          pwd_path = os.path.expanduser("~/.qrctrl-update.pwd")
+
+          def sign(path):
+              # 返回 minisign .sig 全文（多行），嵌入 JSON 时由 json.dumps 转义。
+              # 口令经 --password-file（临时文件）传递，不进 argv。
+              r = subprocess.run(
+                  [sign_tool, "--key", key_path, "--password-file", pwd_path, path],
+                  capture_output=True, text=True, check=True,
+              )
+              return r.stdout
+
+          def asset(name):
+              path = os.path.join("assets", name)
+              h = hashlib.sha256()
+              with open(path, "rb") as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b""):
+                      h.update(chunk)
+              return {
+                  "url": f"https://github.com/{repo}/releases/download/{tag}/{name}",
+                  "size": os.path.getsize(path),
+                  "sha256": h.hexdigest(),
+                  "signature": sign(path),
+              }
+
+          # 精确去一次 "v" 前缀（不用 lstrip：它会剥掉所有前导 v）
+          version = tag[1:] if tag.startswith("v") else tag
+
+          # payload 是「内层 manifest 的 JSON 字符串」：签名对这段字符串的字节，
+          # 客户端验签原文后再 parse——两端字节确定一致（src/update.rs 的 SignedManifest）。
+          payload = json.dumps({
+              "version": version,
+              "notes_url": f"https://github.com/{repo}/releases/tag/{tag}",
+              "platforms": {
+                  "windows-x86_64": asset("qrctrl-x86_64-windows.exe"),
+                  "linux-x86_64": asset("qrctrl-x86_64-linux"),
+                  "macos-aarch64-app": asset("qrctrl-aarch64-macos.app.zip"),
+                  "macos-x86_64-app": asset("qrctrl-x86_64-macos.app.zip"),
+              },
+          }, ensure_ascii=False)
+
+          with open("payload.json", "w") as f:
+              f.write(payload)
+          envelope = {"payload": payload, "signature": sign("payload.json")}
+          with open("update-manifest.json", "w") as f:
+              json.dump(envelope, f, indent=2)
+          print("signed manifest built:", json.dumps({k: v for k, v in envelope.items() if k != "payload"}))
+          EOF
+
+      - name: Shred signing key
+        if: always()
+        run: rm -f "$HOME/.qrctrl-update.key" "$HOME/.qrctrl-update.pwd" payload.json
+
+      - name: Upload update-manifest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" update-manifest.json --clobber --repo "$GITHUB_REPOSITORY"
+
+      # smoke 自检：把刚上传的 manifest 下载回来，走客户端同一条验签路径
+      # （verify_manifest example 与 check_latest 共用 parse_signed_manifest）。
+      # 在这里失败好过发布后所有客户端静默拒绝更新。
+      - name: Smoke-verify uploaded manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'update-manifest.json' --dir smoke --clobber
+          cargo run --release --example verify_manifest -- smoke/update-manifest.json

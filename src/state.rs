@@ -83,7 +83,7 @@ pub struct CoreState {
     pub mouse_sensitivity: Arc<Mutex<f32>>,
 }
 
-/// HTTP / WebSocket handler 看到的完整状态：业务核心 + 进程协调句柄。
+/// HTTP / WebSocket handler 看到的完整状态：业务核心 + 进程协调句柄 + 更新状态机。
 /// 协调句柄只有 restart / quit 用到（restart_handler 通过 tray_proxy 唤醒
 /// tao 事件循环，两者都通过 shutdown_notify 让 server 优雅退出）。
 #[derive(Clone)]
@@ -93,4 +93,8 @@ pub struct AppState {
     pub shutdown_notify: Arc<Notify>,
     /// 给 server 线程用来唤醒 tao event loop（restart 信号需要让 tray loop 退出）。
     pub tray_proxy: EventLoopProxy<UserEvent>,
+    /// 在线升级状态机（`/api/update/*` 的后端）。挂 AppState 而非 CoreState：
+    /// 更新是进程级动作，不是 ws dispatch 的协议业务——CoreState 保持
+    /// 「纯业务核心、脱离 GUI/进程依赖可单测」的边界不被稀释。
+    pub update: Arc<crate::update::Updater>,
 }

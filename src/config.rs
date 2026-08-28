@@ -36,6 +36,10 @@ pub struct Config {
     /// 同 theme 一样走 live-apply（POST /api/mouse_sensitivity）：改 state + 写文件，
     /// 不需要重启。范围 0.1-5.0，过低触控板太肉、过高难以精准点击。
     pub mouse_sensitivity: Option<f32>,
+
+    /// 跳过指定版本不再提示更新（如 "0.11.2"）。用户在配置页点「跳过此版本」写入，
+    /// 后续检查发现最新版等于它时按已跳过处理。
+    pub skip_version: Option<String>,
 }
 
 /// 返回配置文件路径。`dirs::config_dir()` 在某些嵌入式环境可能返回 None，做兜底。
@@ -126,6 +130,11 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
     if let Some(s) = cfg.mouse_sensitivity {
         if !s.is_finite() || s < 0.1 || s > 5.0 {
             return Err("mouse_sensitivity 必须是 0.1-5.0 之间的有限数".into());
+        }
+    }
+    if let Some(ref v) = cfg.skip_version {
+        if v.trim().is_empty() {
+            return Err("skip_version 不能是空字符串".into());
         }
     }
     Ok(())

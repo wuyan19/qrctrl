@@ -515,3 +515,67 @@
       width: 100%;
     }
   }
+
+  /* ====== 更新区块：单行极简 ====== */
+  /* 一个 flex 行装下按钮 / 状态文案 / 更新日志链接 / 下载进度条，按状态互斥显隐
+     （下载时按钮全部 hidden，只留进度条）。flex-wrap 兜底窄屏换行。
+     该行是 .field grid 的第 2 列内容（label 后第一个子项，自动放置，无需显式
+     grid-column）。 */
+  .update-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    min-height: 36px;
+  }
+  .update-note {
+    font-size: 12px;
+    color: var(--ink-dim);
+    white-space: nowrap;
+  }
+  .update-note.ok    { color: var(--green); }
+  .update-note.warn  { color: var(--amber); }
+  .update-note.error { color: var(--red); }
+  .update-notes-link {
+    font-size: 12px;
+    color: var(--cyan);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--cyan);
+    white-space: nowrap;
+  }
+  /* 主操作（安装）在 btn-small 基础上加强调，但不与保存按钮同级 */
+  .btn-primary-small {
+    color: var(--amber);
+    border-color: var(--border-amber);
+  }
+  .btn-primary-small:hover { background: var(--amber-soft); }
+  .update-progress {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 160px;
+  }
+  /* display:flex 会覆盖 HTML hidden 属性的 UA 样式（display:none），进度条会
+     常显——必须显式恢复 hidden 语义。按钮（.btn-small 无 display 规则）不受影响。 */
+  .update-progress[hidden] { display: none; }
+  .update-progress-track {
+    flex: 1;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--panel-hi);
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .update-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--amber);
+    transition: width 0.3s ease;
+  }
+  .update-progress-text {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+    white-space: nowrap;
+  }

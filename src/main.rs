@@ -14,6 +14,7 @@ mod qr;
 mod state;
 mod token;
 mod tray;
+mod update;
 mod ws;
 
 use std::net::Ipv4Addr;
@@ -31,6 +32,25 @@ use crate::tray::TrayState;
 
 const DEFAULT_MAX_SIZE: u64 = 10 * 1024 * 1024 * 1024; // 10 GB
 const REGISTRY_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// server 线程的启动参数（三层合并后的最终值）。
+///
+/// async_main 的参数在引入在线升级相关字段（skip_version）后开始膨胀，
+/// 继续平铺会让调用处的实参顺序变成隐患——收拢成一个 struct，
+/// 新增字段只改 struct 定义和构造点，调用签名不变。
+struct ServerParams {
+    token: String,
+    name: String,
+    addr: String,
+    port: u16,
+    prefer_ip: Option<String>,
+    max_size: u64,
+    theme: String,
+    mouse_sensitivity: f32,
+    save_dir: PathBuf,
+    /// 已跳过的版本号（该版本不再提示更新）。
+    skip_version: Option<String>,
+}
 
 #[derive(Parser)]
 #[command(version, about = "QR Control")]
@@ -263,6 +283,8 @@ fn main() {
     let theme = file_cfg.theme.clone().unwrap_or_else(|| "system".to_string());
     // 触控板灵敏度：同 theme 是 UI 偏好，CLI 不暴露。config.toml 给值即用，否则默认 1.0。
     let mouse_sensitivity = file_cfg.mouse_sensitivity.unwrap_or(1.0);
+    // 在线升级：仅手动（配置页「检查更新」按钮），skip_version 记录用户主动跳过的版本。
+    let skip_version = file_cfg.skip_version.clone();
 
     // 端口探测（用户没传 --port 时从 8080 起递增找可用端口）。
     // 实际 listener 在 server 线程内由 tokio 重新 bind，见上方 probe_port 注释。
@@ -308,19 +330,19 @@ fn main() {
                 .enable_all()
                 .build()
                 .expect("tokio runtime 初始化失败");
-            rt.block_on(async_main(
+            let params = ServerParams {
                 token,
-                server_name,
+                name: server_name,
                 addr,
                 port,
                 prefer_ip,
                 max_size,
                 theme,
                 mouse_sensitivity,
-                server_shutdown,
-                tray_proxy,
                 save_dir,
-            ));
+                skip_version,
+            };
+            rt.block_on(async_main(params, server_shutdown, tray_proxy));
         })
         .expect("server 线程启动失败");
 
@@ -349,18 +371,22 @@ fn main() {
 // 页面 handler 在 assets.rs（index_handler / config_page_handler，首屏注入主题 +
 // 设备名），配置页的 /api/* handlers 在 api.rs，配置文件本体在 config.rs——main 只做编排。
 async fn async_main(
-    token: String,
-    name: String,
-    addr: String,
-    port: u16,
-    prefer_ip: Option<String>,
-    max_size: u64,
-    theme: String,
-    mouse_sensitivity: f32,
+    params: ServerParams,
     shutdown_notify: Arc<Notify>,
     tray_proxy: tao::event_loop::EventLoopProxy<tray::UserEvent>,
-    save_dir: PathBuf,
 ) {
+    let ServerParams {
+        token,
+        name,
+        addr,
+        port,
+        prefer_ip,
+        max_size,
+        theme,
+        mouse_sensitivity,
+        save_dir,
+        skip_version,
+    } = params;
     // listener 在 server 线程内由 tokio 直接 bind（不走 main → from_std 路径，
     // 因为 Windows IOCP 下跨线程 from_std 不能正常 accept）。main 阶段已用
     // probe_port 同步探测过，这里重新 bind 仅在 TOCTOU 极端情况下才会失败。
@@ -406,10 +432,13 @@ async fn async_main(
         theme: Arc::new(parking_lot::Mutex::new(theme)),
         mouse_sensitivity: Arc::new(parking_lot::Mutex::new(mouse_sensitivity)),
     };
+    // 更新状态机（仅手动触发：配置页「检查更新」按钮 → POST /api/update/check）。
+    let updater = Arc::new(update::Updater::new(skip_version));
     let state = AppState {
         core,
         shutdown_notify: shutdown_notify.clone(),
         tray_proxy,
+        update: updater,
     };
 
     let app = Router::new()
@@ -427,6 +456,10 @@ async fn async_main(
         .route("/api/local_ips", get(api::local_ips_handler))
         .route("/api/check_port", get(api::check_port_handler))
         .route("/api/restart", post(api::restart_handler))
+        .route("/api/update/check", post(api::update_check_handler))
+        .route("/api/update/status", get(api::update_status_handler))
+        .route("/api/update/install", post(api::update_install_handler))
+        .route("/api/update/skip", post(api::update_skip_handler))
         .with_state(state);
 
     // graceful shutdown：tray 退出菜单触发 notify，server 收到信号后优雅关闭

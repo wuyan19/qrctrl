@@ -32,6 +32,20 @@ tray-icon = "0.24"
 tao = "0.35"
 softbuffer = "0.4"
 toml = "0.8"
+# 在线升级：ureq（默认 rustls，无 OpenSSL 依赖）拉 manifest + 下载资产；
+# self-replace 处理「替换正在运行的自身」；semver 比较版本；sha2 完整性校验；
+# minisign-verify 是 Ed25519 验签（Tauri updater 同款，verify-only 零依赖），
+# 防 GitHub 账号被盗推恶意更新——HTTPS 只保通道，签名保真实性。
+ureq = "3"
+semver = "1"
+sha2 = "0.10"
+self-replace = "1"
+minisign-verify = "0.2"
+
+# zip 仅 macOS 需要：更新资产是 .app.zip（ditto -c -k --keepParent 格式），
+# 解压恢复 bundle。只开 deflate（ditto 默认压缩格式），其余 feature 省体积。
+[target.'cfg(target_os = "macos")'.dependencies]
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -46,6 +60,10 @@ winres = "0.1"
 [dev-dependencies]
 ico = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
+# 更新签名工具（examples/keygen_update.rs + sign_update.rs）用：
+# minisign 是 jedisct1 的完整实现（生成密钥对 / 签名），只在开发与 CI 编译，
+# 不进 release 依赖树；客户端运行时只依赖上面的 minisign-verify。
+minisign = "0.9"
 
 [profile.release]
 opt-level = "z"

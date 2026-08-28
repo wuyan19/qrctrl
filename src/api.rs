@@ -41,6 +41,9 @@ pub async fn get_config_handler(
         "prefer_ip": c.prefer_ip,
         "theme": *c.theme.lock(),
         "mouse_sensitivity": *c.mouse_sensitivity.lock(),
+        // skip_version 由「跳过此版本」按钮管理（/api/update/skip 实时写文件），
+        // 这里回显给前端 saveConfig 原样带回，防止 POST /api/config 把它擦成 None。
+        "skip_version": state.update.skip_version(),
     })))
 }
 
@@ -305,6 +308,97 @@ pub async fn restart_handler(
         .tray_proxy
         .send_event(crate::tray::UserEvent::RestartRequested);
     state.shutdown_notify.notify_waiters();
+    Json(json!({"ok": true})).into_response()
+}
+
+// ===== 在线更新（update.rs 的 HTTP 面）=====
+//
+// 四个 handler 都是薄转发：检查/下载/安装的编排与状态机全在 update.rs 的
+// Updater 里（对齐 ws::dispatch 的模式——api 层不做业务）。skip 的持久化走
+// load-覆盖-save，与 theme / mouse_sensitivity 两个 live-apply 特例同模式。
+
+/// `POST /api/update/check?t=<token>` → 后台检查更新。
+/// 幂等：已在检查/下载/安装/待重启状态时静默忽略（Updater 内部判定），
+/// 前端连点不会叠出并发请求。结果通过 `GET /api/update/status` 轮询。
+pub async fn update_check_handler(
+    _: crate::state::Authed,
+    State(state): State<AppState>,
+) -> Response {
+    state.update.spawn_check();
+    Json(json!({"ok": true})).into_response()
+}
+
+/// `GET /api/update/status?t=<token>` → `{"current": "...", "phase": {...}}`。
+/// phase 结构见 update.rs 的 UpdatePhase（serde tag = "state"）。
+/// 前端只在更新区块交互期间轮询，平时不轮询。
+pub async fn update_status_handler(
+    _: crate::state::Authed,
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    Json(state.update.status_json())
+}
+
+/// `POST /api/update/install?t=<token>` → 后台下载 + sha256 校验 + 平台替换。
+/// 终态 `restart_pending` 后由前端调现有的 `POST /api/restart` 完成重启——
+/// update 模块刻意不持有 tray_proxy / shutdown_notify（进程协调只属于 tray/main）。
+pub async fn update_install_handler(
+    _: crate::state::Authed,
+    State(state): State<AppState>,
+) -> Response {
+    use axum::http::StatusCode;
+    match state.update.spawn_install() {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": e})),
+        )
+            .into_response(),
+    }
+}
+
+/// `POST /api/update/skip?t=<token>` body=`{"version": "0.11.2", "skip": true|false}`。
+/// skip=true：该版本不再提示；skip=false：仅当当前跳过的正是该版本时清除。
+/// 内存（Updater）+ config.toml 双写。
+pub async fn update_skip_handler(
+    _: crate::state::Authed,
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Response {
+    use axum::http::StatusCode;
+    let Some(version) = payload
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .filter(|v| !v.trim().is_empty())
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "缺少非空 version 字段"})),
+        )
+            .into_response();
+    };
+    let skip = payload.get("skip").and_then(|v| v.as_bool()).unwrap_or(true);
+
+    // 取消跳过只清除「正是这个版本」的标记；当前跳过的是别的版本则保持不变。
+    let cur = state.update.skip_version();
+    let new_skip = if skip {
+        Some(version)
+    } else if cur.as_deref() == Some(version.as_str()) {
+        None
+    } else {
+        cur
+    };
+
+    state.update.set_skip_version(new_skip.clone());
+    let mut cfg = config::load();
+    cfg.skip_version = new_skip;
+    if let Err(e) = config::save(&cfg) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": format!("写入失败：{}", e)})),
+        )
+            .into_response();
+    }
     Json(json!({"ok": true})).into_response()
 }
 
