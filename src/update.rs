@@ -542,7 +542,10 @@ fn extract_zip(archive: &Path, dest: &Path) -> Result<(), UpdateError> {
                 rel.to_string_lossy()
             )));
         }
-        let out = dest.join(rel);
+        // join 用借用（&rel）：rel 后面还要用（主程序路径判断）。
+        // 此处曾因 move-后-borrow 在 macOS CI 上编译失败（E0382）——该函数
+        // 被 cfg(macos) 隔离，Windows 开发机 check 不到，改动必须跑全平台验证。
+        let out = dest.join(&rel);
         if entry.is_dir() {
             std::fs::create_dir_all(&out).map_err(io_err("创建目录"))?;
             continue;
