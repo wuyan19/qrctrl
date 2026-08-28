@@ -20,24 +20,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # asset_suffix 是资产名的架构段：最终名 = qrctrl-<tag>-<suffix>，
+          # 如 qrctrl-v0.10.1-x86_64-windows.exe（带版本号，同名防混淆）。
           - platform: macos-latest
             target: aarch64-apple-darwin
             artifact_name: qrctrl
-            asset_name: qrctrl-aarch64-macos
+            asset_suffix: aarch64-macos
           - platform: macos-latest
             target: x86_64-apple-darwin
             artifact_name: qrctrl
-            asset_name: qrctrl-x86_64-macos
+            asset_suffix: x86_64-macos
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact_name: qrctrl
-            asset_name: qrctrl-x86_64-linux
+            asset_suffix: x86_64-linux
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: qrctrl.exe
-            asset_name: qrctrl-x86_64-windows.exe
+            asset_suffix: x86_64-windows.exe
 
     runs-on: ${{ matrix.platform }}
+    env:
+      # tag 统一解析（push tag / workflow_dispatch 两种触发），资产名与 release
+      # 元数据都从这取，避免同一表达式散落多处。
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -66,23 +72,24 @@ jobs:
         if: runner.os == 'macOS'
         working-directory: target/${{ matrix.target }}/release
         run: |
-          cp qrctrl ${{ matrix.asset_name }}
-          ditto -c -k --keepParent qrctrl.app ${{ matrix.asset_name }}.app.zip
+          cp qrctrl "qrctrl-${TAG}-${{ matrix.asset_suffix }}"
+          ditto -c -k --keepParent qrctrl.app "qrctrl-${TAG}-${{ matrix.asset_suffix }}.app.zip"
 
       - name: Rename binary (non-macOS)
         if: runner.os != 'macOS'
-        run: cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+        run: cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "target/${{ matrix.target }}/release/qrctrl-${TAG}-${{ matrix.asset_suffix }}"
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          tag_name: ${{ env.TAG }}
+          # with 表达式里引用 job env（env.TAG），与 shell 步骤同名同源
           files: |
-            target/${{ matrix.target }}/release/${{ matrix.asset_name }}
-            target/${{ matrix.target }}/release/${{ matrix.asset_name }}.app.zip
-          name: qrctrl ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+            target/${{ matrix.target }}/release/qrctrl-${{ env.TAG }}-${{ matrix.asset_suffix }}
+            target/${{ matrix.target }}/release/qrctrl-${{ env.TAG }}-${{ matrix.asset_suffix }}.app.zip
+          name: qrctrl ${{ env.TAG }}
           draft: true
 
   # 更新清单：等四个平台的资产全部上传后，从 draft release 下载它们计算
@@ -94,6 +101,8 @@ jobs:
   manifest:
     needs: release
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -110,13 +119,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
-      - name: Resolve tag
-        id: tag
-        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
-
       - name: Cargo.toml version must match tag
-        env:
-          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
           CARGO_VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           TAG_VER="${TAG#v}"
@@ -152,15 +155,12 @@ jobs:
       - name: Download release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'qrctrl-*' --dir assets
 
       - name: Build signing tool
         run: cargo build --release --example sign_update
 
       - name: Build signed update-manifest.json
-        env:
-          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
           python3 - << 'EOF'
           import hashlib, json, os, subprocess, sys
@@ -202,14 +202,15 @@ jobs:
 
           # payload 是「内层 manifest 的 JSON 字符串」：签名对这段字符串的字节，
           # 客户端验签原文后再 parse——两端字节确定一致（src/update.rs 的 SignedManifest）。
+          # 资产名含 tag（qrctrl-<tag>-<arch>...），与 release job 的打包命名一致。
           payload = json.dumps({
               "version": version,
               "notes_url": f"https://github.com/{repo}/releases/tag/{tag}",
               "platforms": {
-                  "windows-x86_64": asset("qrctrl-x86_64-windows.exe"),
-                  "linux-x86_64": asset("qrctrl-x86_64-linux"),
-                  "macos-aarch64-app": asset("qrctrl-aarch64-macos.app.zip"),
-                  "macos-x86_64-app": asset("qrctrl-x86_64-macos.app.zip"),
+                  "windows-x86_64": asset(f"qrctrl-{tag}-x86_64-windows.exe"),
+                  "linux-x86_64": asset(f"qrctrl-{tag}-x86_64-linux"),
+                  "macos-aarch64-app": asset(f"qrctrl-{tag}-aarch64-macos.app.zip"),
+                  "macos-x86_64-app": asset(f"qrctrl-{tag}-x86_64-macos.app.zip"),
               },
           }, ensure_ascii=False)
 
@@ -228,7 +229,6 @@ jobs:
       - name: Upload update-manifest.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: gh release upload "$TAG" update-manifest.json --clobber --repo "$GITHUB_REPOSITORY"
 
       # smoke 自检：把刚上传的 manifest 下载回来，走客户端同一条验签路径
@@ -237,7 +237,6 @@ jobs:
       - name: Smoke-verify uploaded manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'update-manifest.json' --dir smoke --clobber
           cargo run --release --example verify_manifest -- smoke/update-manifest.json

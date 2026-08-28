@@ -37,7 +37,7 @@ cargo install --path .
 
 在 [Releases](https://github.com/wuyan19/qrctrl/releases) 页面下载对应平台的二进制。
 
-> **macOS 用户**：每个架构发布两个产物——裸二进制（`qrctrl-<arch>-macos`）和 `.app` 包（`qrctrl-<arch>-macos.app.zip`）。
+> **macOS 用户**：每个架构发布两个产物——裸二进制（`qrctrl-<版本号>-<arch>-macos`）和 `.app` 包（`qrctrl-<版本号>-<arch>-macos.app.zip`）。
 >
 > - **要双击后台运行**：下 `.app.zip`，Finder 双击解压，再双击 `qrctrl.app`。不弹 Terminal、不进 Dock、只有托盘。拖进 `/Applications` 后可从 Spotlight 启动。
 > - **要走命令行**：下裸二进制，`chmod +x`，在 shell 里运行。

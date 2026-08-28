@@ -37,7 +37,7 @@ cargo install --path .
 
 Download the binary for your platform from the [Releases](https://github.com/wuyan19/qrctrl/releases) page.
 
-> **macOS Users**: Two assets are published per architecture — a bare binary (`qrctrl-<arch>-macos`) and an `.app` bundle (`qrctrl-<arch>-macos.app.zip`).
+> **macOS Users**: Two assets are published per architecture — a bare binary (`qrctrl-<version>-<arch>-macos`) and an `.app` bundle (`qrctrl-<version>-<arch>-macos.app.zip`).
 >
 > - **For double-click background use**, grab the `.app.zip`. Unzip it (Finder → double-click works), then double-click `qrctrl.app`. No Terminal opens, no Dock icon, just the tray. Drop it in `/Applications` to launch from Spotlight thereafter.
 > - **For CLI use**, grab the bare binary, `chmod +x`, and run from a shell.
