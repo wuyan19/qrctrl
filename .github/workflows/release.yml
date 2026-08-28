@@ -144,6 +144,10 @@ jobs:
           printf '%s' "$UPDATE_MINISIGN_KEY" > "$HOME/.qrctrl-update.key"
           printf '%s' "$UPDATE_MINISIGN_PASSWORD" > "$HOME/.qrctrl-update.pwd"
           chmod 600 "$HOME/.qrctrl-update.key" "$HOME/.qrctrl-update.pwd"
+          # 指纹诊断（不泄露内容）：用于核对 secret 是否粘贴完整。
+          # 参考真值：私钥两行——comment 行 + base64 行；口令 = .sign/minisign.pwd 的字节数
+          echo "key 指纹：$(wc -l < "$HOME/.qrctrl-update.key") 行，各行长 $(awk '{printf "%s ", length($0)}' "$HOME/.qrctrl-update.key")sha256=$(sha256sum "$HOME/.qrctrl-update.key" | cut -c1-16)"
+          echo "pwd 指纹：$(wc -c < "$HOME/.qrctrl-update.pwd") 字节"
 
       - name: Download release assets
         env:
@@ -159,7 +163,7 @@ jobs:
           TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
           python3 - << 'EOF'
-          import hashlib, json, os, subprocess
+          import hashlib, json, os, subprocess, sys
 
           tag = os.environ["TAG"]
           repo = os.environ["GITHUB_REPOSITORY"]
@@ -170,10 +174,14 @@ jobs:
           def sign(path):
               # 返回 minisign .sig 全文（多行），嵌入 JSON 时由 json.dumps 转义。
               # 口令经 --password-file（临时文件）传递，不进 argv。
+              # 不用 check=True：它吞掉子进程 stderr，签名工具 panic 时看不到原因。
               r = subprocess.run(
                   [sign_tool, "--key", key_path, "--password-file", pwd_path, path],
-                  capture_output=True, text=True, check=True,
+                  capture_output=True, text=True,
               )
+              if r.returncode != 0:
+                  print(f"sign_update 失败（exit {r.returncode}）：{r.stderr}", file=sys.stderr)
+                  raise SystemExit(1)
               return r.stdout
 
           def asset(name):
