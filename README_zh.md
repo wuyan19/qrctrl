@@ -18,6 +18,12 @@
 
 用 **Rust** + axum + WebSocket 构建。跨平台（macOS / Windows / Linux），手机端无需安装 App，浏览器即可。
 
+## 预览
+
+PC 上启动后，终端 banner 与置顶弹窗都会展示扫码二维码，手机扫码即连：
+
+![qrctrl 启动后的终端 banner 二维码与弹窗](docs/imgs/snapshot.png)
+
 ## 安装
 
 ### 从源码编译

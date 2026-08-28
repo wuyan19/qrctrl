@@ -18,6 +18,12 @@ A cross-platform tool that turns your phone into a remote control for your PC �
 
 Built with **Rust** + axum + WebSocket. Cross-platform (macOS / Windows / Linux), no client app install — just a browser.
 
+## Snapshot
+
+After qrctrl starts on the PC, both the terminal banner and the always-on-top window show the scan QR code — scan with your phone and you're connected:
+
+![qrctrl terminal banner QR code and popup window](docs/imgs/snapshot.png)
+
 ## Install
 
 ### From Source
