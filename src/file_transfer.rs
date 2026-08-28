@@ -94,6 +94,17 @@ pub fn sanitize_filename(raw: &str) -> Option<String> {
     Some(name)
 }
 
+/// 判断 name 是否是「可直接 join 到 save_dir 的纯文件名」：不含任何路径分隔符、
+/// 不是 `.`/`..`，`sanitize_filename` 结果与自身完全一致。
+///
+/// 上传写盘通道用 `sanitize_filename`（会剥掉目录部分改写后落盘，天然安全）；
+/// `set_clipboard_files` 通道必须用这个严格版本——它是「读」不是「写」，
+/// 接受 `"../../etc/passwd"` 这类名字会把任意路径的文件推进剪贴板，
+/// 再经 get_file → /download 变成任意文件外带。
+pub fn is_plain_filename(name: &str) -> bool {
+    sanitize_filename(name).as_deref() == Some(name)
+}
+
 /// 文件名冲突时加 UUID 短码后缀：`movie.mkv` → `movie_a3c7f8d2.mkv`。
 pub fn resolve_conflict(dir: &Path, name: &str) -> PathBuf {
     let target = dir.join(name);
@@ -125,11 +136,12 @@ pub async fn upload_handler(
     body: Body,
 ) -> Result<Json<UploadResponse>, StatusCode> {
     let meta = state
+        .core
         .registry
         .take_upload(&id)
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let target = resolve_conflict(&state.save_dir, &meta.name);
+    let target = resolve_conflict(&state.core.save_dir, &meta.name);
     let mut file = tokio::fs::File::create(&target)
         .await
         .map_err(|e| {
@@ -139,7 +151,7 @@ pub async fn upload_handler(
 
     let mut stream = body.into_data_stream();
     let mut total: u64 = 0;
-    let max = state.max_size;
+    let max = state.core.max_size;
     let mut err: Option<StatusCode> = None;
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
@@ -199,6 +211,7 @@ pub async fn download_handler(
     AxumPath(id): AxumPath<String>,
 ) -> Result<Response, StatusCode> {
     let meta = state
+        .core
         .registry
         .take_download(&id)
         .ok_or(StatusCode::NOT_FOUND)?;
@@ -283,6 +296,26 @@ mod tests {
     }
 
     #[test]
+    fn is_plain_filename_accepts_bare_names() {
+        assert!(is_plain_filename("movie.mkv"));
+        assert!(is_plain_filename("文档.pdf"));
+        assert!(is_plain_filename("a b c.txt"));
+    }
+
+    #[test]
+    fn is_plain_filename_rejects_any_path_component() {
+        // sanitize 会剥掉目录部分改写（写盘通道安全），is_plain_filename 要求
+        // 名字本身就是纯文件名——含分隔符/`..`/绝对路径一律拒绝
+        assert!(!is_plain_filename("../etc/passwd"));
+        assert!(!is_plain_filename("/etc/passwd"));
+        assert!(!is_plain_filename("a/b/c.txt"));
+        assert!(!is_plain_filename(r"D:\dir\movie.mkv"));
+        assert!(!is_plain_filename(".."));
+        assert!(!is_plain_filename("."));
+        assert!(!is_plain_filename(""));
+    }
+
+    #[test]
     fn resolve_conflict_no_existing() {
         let dir = tempdir();
         let got = resolve_conflict(&dir, "free.txt");
@@ -327,9 +360,18 @@ mod tests {
         assert_eq!(percent_encode_filename("a b.txt"), "a%20b.txt");
     }
 
-    /// 临时目录辅助：用进程唯一名 + 测试结束手动清理。
-    /// 不用 tempfile crate（避免新依赖），测试内自己 cleanup。
-    fn tempdir() -> PathBuf {
+    /// 临时目录辅助：Drop 时整目录删除（断言失败也能清理，不跨运行累积）。
+    /// 不用 tempfile crate（避免新依赖）。Deref 到 Path 让调用点直接 `dir.join(...)`。
+    struct TempDir(PathBuf);
+
+    impl std::ops::Deref for TempDir {
+        type Target = std::path::Path;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    fn tempdir() -> TempDir {
         let mut p = std::env::temp_dir();
         p.push(format!(
             "qrctrl_test_{}_{}",
@@ -337,6 +379,12 @@ mod tests {
             Uuid::new_v4()
         ));
         std::fs::create_dir_all(&p).unwrap();
-        p
+        TempDir(p)
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 }

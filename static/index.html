@@ -61,15 +61,15 @@
     <div class="sheet-row">
       <button id="btn-pull-text"><span class="ic">📋</span>拉文本</button>
       <button id="btn-pull-image"><span class="ic">🖼</span>拉图片</button>
-      <button id="btn-pull-file"><span class="ic">📎</span>拉文件</button>
+      <button id="btn-pull-file"><span class="ic">📁</span>拉文件</button>
     </div>
   </div>
   <div class="sheet-group">
     <!--- <div class="sheet-group-title">手机 → PC</div> --->
     <div class="sheet-row">
-      <button id="btn-pick-image"><span class="ic">📷</span>推图片</button>
-      <button id="btn-send-file"><span class="ic">📁</span>推文件</button>
       <button id="btn-touchpad"><span class="ic">🖱</span>触控板</button>
+      <button id="btn-pick-image"><span class="ic">📷</span>推图片</button>
+      <button id="btn-send-file"><span class="ic">📎</span>推文件</button>
     </div>
   </div>
 </div>
@@ -129,7 +129,7 @@
       <h3>安全</h3>
       <p>仅本机局域网通信，每次启动随机生成 token 鉴权（除非配置了固定 token）。关闭 PC 程序即断开所有连接。</p>
       <h3>排错</h3>
-      <p>PC 的 IP 变化后需重新扫码。断线会自动重连（指数退避，最长 10 秒）。</p>
+      <p>PC 的 IP 变化后，PC 端二维码窗口会自动更新为最新地址，手机重新扫码即可，无需重启程序。断线会自动重连（指数退避，最长 10 秒）。</p>
     </div>
     <button id="help-close">关闭</button>
   </div>
@@ -151,7 +151,7 @@
       <button id="btn-mouse-right">●</button>
       <button id="btn-scroll-down">⇩</button>
       <button id="btn-copy">📋</button>
-      <button id="btn-paste">📥</button>
+      <button id="btn-paste">📝</button>
     </div>
     <div class="touchpad-hint">SCROLL · L · R · SCROLL · COPY · PASTE</div>
   </div>

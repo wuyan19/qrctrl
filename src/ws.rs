@@ -11,7 +11,7 @@ use serde::Deserialize;
 use crate::backend::{BackendError, DynBackend, InputBackend};
 use crate::clipboard;
 use crate::file_transfer::{self, UploadMeta};
-use crate::state::AppState;
+use crate::state::{AppState, CoreState};
 
 const MAX_TEXT_BYTES: usize = 100 * 1024;
 
@@ -68,8 +68,9 @@ pub async fn ws_handler(
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
     tracing::info!("ws 客户端已连接");
     // 升级后立刻推送设备名 + 主题偏好，前端用于状态栏显示和主题应用
-    let theme = state.theme.lock().clone();
-    let info = server_info_json(&state.name, &theme);
+    let core = state.core;
+    let theme = core.theme.lock().clone();
+    let info = server_info_json(&core.name, &theme);
     if socket.send(Message::Text(info.into())).await.is_err() {
         tracing::warn!("ws 发送 server_info 失败，断开");
         return;
@@ -77,7 +78,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     while let Some(msg) = socket.recv().await {
         match msg {
             Ok(Message::Text(text)) => {
-                let resp = dispatch(&state, text.as_str()).await;
+                let resp = dispatch(&core, text.as_str()).await;
                 if socket.send(Message::Text(resp.into())).await.is_err() {
                     break;
                 }
@@ -89,7 +90,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     tracing::info!("ws 客户端断开");
 }
 
-async fn dispatch(state: &AppState, raw: &str) -> String {
+/// 只依赖 `CoreState`（业务核心，无 GUI/进程协调依赖），MockBackend +
+/// 临时目录即可构造，全分支可单测——见下方 tests 里的 dispatch_* 系列。
+async fn dispatch(state: &CoreState, raw: &str) -> String {
     let cmd: Command = match serde_json::from_str(raw) {
         Ok(c) => c,
         Err(e) => {
@@ -141,9 +144,13 @@ async fn dispatch(state: &AppState, raw: &str) -> String {
                 backend.clone(),
                 move |b| {
                     // 前端只传文件名（绝对路径不暴露给浏览器），server 在 save_dir 下解析。
-                    // 过滤掉不存在的（前端传错名 / 文件被外部删 / 旧批残留），剩下的推剪贴板。
+                    // is_plain_filename 严格拒绝含路径分隔符 / `..` 的名字——这是「读」通道，
+                    // 放过 `../` 会把 save_dir 之外的文件推进剪贴板再经 /download 外带
+                    //（上传写盘通道的 sanitize_filename 是改写语义，不够严）。
+                    // 再过滤掉不存在的（前端传错名 / 文件被外部删 / 旧批残留），剩下的推剪贴板。
                     let paths: Vec<std::path::PathBuf> = names
                         .iter()
+                        .filter(|n| file_transfer::is_plain_filename(n))
                         .map(|n| save_dir.join(n))
                         .filter(|p| p.is_file())
                         .collect();
@@ -579,7 +586,7 @@ mod tests {
     // 里解耦出来。这是 dispatch 最容易出 bug 的部分（参数顺序、灵敏度乘法、错误码映射）。
     // ========================================================================
 
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use crate::backend::{BackendError, FileMeta};
     use crate::clipboard::CbError;
@@ -600,6 +607,7 @@ mod tests {
         ReadClipboardImage,
         WriteClipboardImage,
         ReadClipboardFiles,
+        PushFiles(Vec<std::path::PathBuf>),
     }
 
     /// 测试用 InputBackend：记录所有调用到 `calls`，方法返回 `ret` 预设的结果。
@@ -730,8 +738,9 @@ mod tests {
         }
         fn push_files_to_clipboard(
             &self,
-            _paths: &[std::path::PathBuf],
+            paths: &[std::path::PathBuf],
         ) -> Result<(), BackendError> {
+            self.record(Call::PushFiles(paths.to_vec()));
             Ok(())
         }
 
@@ -865,5 +874,194 @@ mod tests {
         inject_paste_cmd(&backend).await;
         let mock = probe.as_ref().as_any().downcast_ref::<MockBackend>().unwrap();
         assert_eq!(mock.calls(), vec![Call::InjectCopy, Call::InjectPaste]);
+    }
+
+    // ========================================================================
+    // dispatch 全分支测试：CoreState 无 GUI / 进程协调依赖，MockBackend +
+    // 临时目录即可构造——这是把 AppState 拆成 core + 协调句柄的主要收益。
+    // ========================================================================
+
+    use crate::file_transfer::TransferRegistry;
+    use crate::state::CoreState;
+
+    /// 测试临时目录：Drop 时整目录删除。断言失败（提前 unwrap/panic）也能清理，
+    /// 不会在 %TEMP% 里跨运行累积 qrctrl-ws-test-* 目录。
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        /// tag 保证同进程内测试并发互不冲突；先 remove 再 create 兜底上次异常退出的残留。
+        fn new(tag: &str) -> Self {
+            let d = std::env::temp_dir().join(format!(
+                "qrctrl-ws-test-{}-{}",
+                tag,
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            TempDir(d)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 测试临时文件：Drop 时删除。放在共享 temp 根、名字必须是裸文件名，所以单独 guard。
+    struct TempFile(std::path::PathBuf);
+
+    impl TempFile {
+        fn new(path: std::path::PathBuf, contents: &[u8]) -> Self {
+            std::fs::write(&path, contents).unwrap();
+            TempFile(path)
+        }
+
+        fn file_name(&self) -> &str {
+            self.0.file_name().unwrap().to_str().unwrap()
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn test_core(save_dir: std::path::PathBuf, backend: crate::backend::DynBackend) -> CoreState {
+        CoreState {
+            token: "testtoken123456".to_string(),
+            name: "unit".to_string(),
+            addr: "0.0.0.0".to_string(),
+            port: 8080,
+            prefer_ip: None,
+            backend,
+            save_dir,
+            max_size: 1024,
+            registry: TransferRegistry::default(),
+            theme: Arc::new(parking_lot::Mutex::new("dark".to_string())),
+            mouse_sensitivity: Arc::new(parking_lot::Mutex::new(1.0)),
+        }
+    }
+
+    /// mouse_move 乘以灵敏度系数后注入（前端完全不感知系数存在）。
+    #[tokio::test]
+    async fn dispatch_mouse_move_applies_sensitivity() {
+        let backend = mock_dyn(false);
+        let probe = backend.clone();
+        let dir = TempDir::new("sens");
+        let core = test_core(dir.path().to_path_buf(), backend);
+        *core.mouse_sensitivity.lock() = 2.5;
+        let resp = dispatch(&core, r#"{"type":"mouse_move","dx":10,"dy":-4}"#).await;
+        assert_eq!(resp, r#"{"type":"ok"}"#);
+        let mock = probe.as_ref().as_any().downcast_ref::<MockBackend>().unwrap();
+        assert_eq!(mock.calls(), vec![Call::InjectMouseMove(25, -10)]);
+    }
+
+    /// 图片 base64 超限：在调度前拦下，返回 too_large 且完全不碰后端。
+    #[tokio::test]
+    async fn dispatch_set_clipboard_image_too_large_short_circuits() {
+        let backend = mock_dyn(false);
+        let probe = backend.clone();
+        let dir = TempDir::new("img");
+        let core = test_core(dir.path().to_path_buf(), backend);
+        let big = "A".repeat(clipboard::MAX_IMG_B64 + 1);
+        let raw = format!(r#"{{"type":"set_clipboard_image","data":"{}"}}"#, big);
+        let resp = dispatch(&core, &raw).await;
+        assert_eq!(resp, r#"{"type":"error","code":"too_large"}"#);
+        let mock = probe.as_ref().as_any().downcast_ref::<MockBackend>().unwrap();
+        assert!(mock.calls().is_empty());
+    }
+
+    /// 声明大小超过 max_size：拒绝注册。
+    #[tokio::test]
+    async fn dispatch_upload_start_too_large() {
+        let dir = TempDir::new("upbig");
+        let core = test_core(dir.path().to_path_buf(), mock_dyn(false));
+        let resp = dispatch(
+            &core,
+            r#"{"type":"upload_start","name":"a.txt","size":999999,"mime":"text/plain"}"#,
+        )
+        .await;
+        assert_eq!(resp, r#"{"type":"error","code":"too_large"}"#);
+    }
+
+    /// 带路径成分的上传名：forbidden_name，不注册。
+    #[tokio::test]
+    async fn dispatch_upload_start_forbidden_name() {
+        let dir = TempDir::new("upname");
+        let core = test_core(dir.path().to_path_buf(), mock_dyn(false));
+        let resp = dispatch(
+            &core,
+            r#"{"type":"upload_start","name":"../evil","size":10,"mime":"text/plain"}"#,
+        )
+        .await;
+        assert_eq!(resp, r#"{"type":"error","code":"forbidden_name"}"#);
+    }
+
+    /// 正常 upload_start：返回 upload_ready（id + 带 token 的 URL），meta 注册进 registry。
+    #[tokio::test]
+    async fn dispatch_upload_start_registers_and_returns_url() {
+        let dir = TempDir::new("upok");
+        let core = test_core(dir.path().to_path_buf(), mock_dyn(false));
+        let resp = dispatch(
+            &core,
+            r#"{"type":"upload_start","name":"movie.mkv","size":100,"mime":"video/x-matroska"}"#,
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["type"], "upload_ready");
+        let url = v["url"].as_str().unwrap();
+        assert!(url.starts_with("/upload/"));
+        assert!(url.ends_with("?t=testtoken123456"));
+        // take 消费式取回：meta 存在、名字已 sanitize、大小透传
+        let id = v["id"].as_str().unwrap().to_string();
+        let meta = core.registry.take_upload(&id).expect("upload meta registered");
+        assert_eq!(meta.name, "movie.mkv");
+        assert_eq!(meta.size, 100);
+    }
+
+    /// set_clipboard_files 的穿越拒绝：只有 save_dir 里真实存在的纯文件名被推
+    /// 剪贴板；`../`（即使目标文件真实存在！）、绝对路径、不存在的名字一律跳过。
+    #[tokio::test]
+    async fn dispatch_set_clipboard_files_rejects_traversal_and_missing() {
+        let dir = TempDir::new("scf");
+        std::fs::write(dir.path().join("ok.txt"), b"x").unwrap();
+        // 在 save_dir 外（共享 temp 根）造一个真实文件，验证「穿越名指向的文件存在」也放不进来
+        let outside = TempFile::new(
+            std::env::temp_dir().join(format!(
+                "qrctrl-ws-test-outside-{}",
+                std::process::id()
+            )),
+            b"x",
+        );
+
+        let backend = mock_dyn(false);
+        let probe = backend.clone();
+        let core = test_core(dir.path().to_path_buf(), backend);
+        let raw = format!(
+            r#"{{"type":"set_clipboard_files","names":["ok.txt","../{}","/etc/passwd","notexist.txt"]}}"#,
+            outside.file_name()
+        );
+        let resp = dispatch(&core, &raw).await;
+        assert_eq!(resp, r#"{"type":"ok"}"#);
+        let mock = probe.as_ref().as_any().downcast_ref::<MockBackend>().unwrap();
+        assert_eq!(
+            mock.calls(),
+            vec![Call::PushFiles(vec![dir.path().join("ok.txt")])]
+        );
+    }
+
+    /// 非法 JSON：decode_failed。
+    #[tokio::test]
+    async fn dispatch_invalid_json_returns_decode_failed() {
+        let dir = TempDir::new("bad");
+        let core = test_core(dir.path().to_path_buf(), mock_dyn(false));
+        let resp = dispatch(&core, "not json").await;
+        assert_eq!(resp, r#"{"type":"error","code":"decode_failed"}"#);
     }
 }

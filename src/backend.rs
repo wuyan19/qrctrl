@@ -9,7 +9,7 @@
 //!   提供 `error_code()` 映射到协议错误码字符串。
 //! - 生产实现 `EnigoBackend` 持有 `Arc<Mutex<Enigo>>` + `ClipboardHandle`，
 //!   方法体直接转发到 `inject::` / `clipboard::` 现有函数——零行为变更。
-//! - `AppState.backend: Arc<dyn InputBackend + Send + Sync>`，测试时注入 `MockBackend`。
+//! - `CoreState.backend: Arc<dyn InputBackend + Send + Sync>`，测试时注入 `MockBackend`。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use crate::inject;
 
 /// trait 对象的统一类型别名：`Arc<dyn InputBackend + Send + Sync>`。
 ///
-/// 所有持有后端的地方（AppState.backend、ws.rs 的 helper 参数）都用这个别名，
+/// 所有持有后端的地方（CoreState.backend、ws.rs 的 helper 参数）都用这个别名，
 /// 避免有的地方写 `dyn InputBackend`、有的写 `dyn InputBackend + Send + Sync` 导致类型不匹配。
 /// Send + Sync 是必须的：后端要在 tokio 多线程 runtime + spawn_blocking 之间共享。
 pub type DynBackend = Arc<dyn InputBackend + Send + Sync>;
@@ -126,7 +126,7 @@ pub trait InputBackend: Send + Sync {
 /// 生产实现：持有 enigo + arboard 句柄，转发到 inject:: / clipboard:: 现有函数。
 ///
 /// 所有方法体都是单行转发——行为与重构前完全一致，只是把调用入口从
-/// `state.enigo` + `state.clipboard` 收敛到 `state.backend`。
+/// `state.core` 里的 enigo / clipboard 直连收敛到 `state.core.backend`。
 pub struct EnigoBackend {
     enigo: Arc<parking_lot::Mutex<enigo::Enigo>>,
     clipboard: ClipboardHandle,

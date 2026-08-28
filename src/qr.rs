@@ -1,5 +1,9 @@
 use qrcode::{Color, QrCode};
 
+/// 像素颜色常量（XRGB8888）：黑 / 白。
+const DARK: u32 = 0xFF000000;
+const LIGHT: u32 = 0xFFFFFFFF;
+
 /// 用 Unicode 半角块字符把 QR 渲染到终端。
 /// 每个终端字符表示 2×2 个 QR 模块，扫描体验最好。
 pub fn render_qr_to_terminal(text: &str) -> Result<(), String> {
@@ -55,9 +59,6 @@ pub fn render_qr_to_pixels(text: &str, scale: u32, border: u32) -> Result<(Vec<u
         }
         code[(mx as usize, my as usize)] == Color::Dark
     };
-
-    const DARK: u32 = 0xFF000000;
-    const LIGHT: u32 = 0xFFFFFFFF;
 
     let mut buf = vec![LIGHT; (pixel_w * pixel_h) as usize];
     for py in 0..pixel_h {
@@ -117,4 +118,3 @@ mod tests {
         let _ = result;
     }
 }
-

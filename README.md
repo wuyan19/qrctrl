@@ -154,6 +154,8 @@ Once running, qrctrl lives in the system tray with a menu:
 - **Settings...** — opens the browser config page so double-click launch users (who have no terminal) can still change parameters.
 - **Quit** — triggers graceful shutdown (in-flight uploads finish before exit).
 
+Copy URL / Show QR re-enumerate network interfaces on every invocation, and while the QR window is open qrctrl re-checks every 3 seconds — when the PC's IP changes (DHCP renewal, Wi-Fi switch), the QR code and URL update automatically to the latest address. Rescan with the phone; no restart needed.
+
 On Windows the release build is a GUI-subsystem binary — double-clicking `qrctrl.exe` from File Explorer launches it silently (no cmd window, no parent terminal to accidentally close). The QR window auto-opens on first launch. From a terminal (PowerShell / cmd) the banner is still printed normally.
 
 Port-conflict auto-recovery: without `--port`, qrctrl probes from 8080 upward (up to 8129) and binds the first free one — so a double-click launch doesn't silently crash when something else is already on 8080. With `--port` passed explicitly, only that port is tried and the program exits if it's taken (respecting the explicit choice).

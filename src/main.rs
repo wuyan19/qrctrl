@@ -2,6 +2,7 @@
 // debug 模式保留 console，方便开发时直接看 println!/panic 信息。
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
+mod api;
 mod assets;
 mod backend;
 mod clipboard;
@@ -20,12 +21,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{extract::State, response::Html, routing::{get, post}, Router};
+use axum::{routing::{get, post}, Router};
 use clap::Parser;
 use enigo::{Enigo, Settings};
 use tokio::sync::Notify;
 
-use crate::state::AppState;
+use crate::state::{AppState, CoreState};
 use crate::tray::TrayState;
 
 const DEFAULT_MAX_SIZE: u64 = 10 * 1024 * 1024 * 1024; // 10 GB
@@ -271,19 +272,14 @@ fn main() {
         tracing::info!("默认端口 8080 被占用，已自动改用 {}", port);
     }
 
-    // 收集局域网候选 IP，应用 --prefer-ip 过滤（若提供）
-    let all_candidates = net::list_local_ipv4s();
-    let candidates = match &prefer_ip {
-        Some(p) => net::filter_by_subnet(&all_candidates, p),
-        None => all_candidates.clone(),
-    };
-    let url = match candidates.first() {
-        Some(ip) => format!("http://{}:{}/?t={}", ip, port, token),
-        None => {
-            tracing::warn!("未检测到局域网 IPv4，回退到 localhost");
-            format!("http://localhost:{}/?t={}", port, token)
-        }
-    };
+    // 收集局域网候选 IP，应用 --prefer-ip 过滤（若提供）。
+    // 只在启动时算一次 banner 用；托盘的「显示二维码 / 复制 URL」会实时重算，
+    // 主机 IP 变化后无需重启进程。
+    let candidates = net::lan_candidates(prefer_ip.as_deref());
+    if candidates.is_empty() {
+        tracing::warn!("未检测到局域网 IPv4，回退到 localhost");
+    }
+    let url = net::scan_url_from(&candidates, port, &token);
 
     // banner 先打印（用 & 借，不 move）
     print_banner(&name, &url, &candidates, &addr, max_size, port, &save_dir);
@@ -299,9 +295,12 @@ fn main() {
 
     // server 跑在子线程：tokio runtime + axum。
     // 主线程必须留给 tao event loop（macOS NSApplication 主线程约束）。
+    // token / prefer_ip 下面还要给 TrayState 用，move 进 server 线程前先 clone。
     let server_shutdown = shutdown_notify.clone();
     let server_name = name.clone();
     let tray_save_dir = save_dir.clone();
+    let tray_token = token.clone();
+    let tray_prefer_ip = prefer_ip.clone();
     let server_handle = std::thread::Builder::new()
         .name("qrctrl-server".to_string())
         .spawn(move || {
@@ -328,7 +327,9 @@ fn main() {
     // 主线程跑 tray 事件循环（阻塞，直到用户选退出 / restart 触发）
     let tray_state = TrayState {
         device_name: name,
-        url,
+        token: tray_token,
+        port,
+        prefer_ip: tray_prefer_ip,
         save_dir: tray_save_dir,
         auto_show_qr: !has_console,
     };
@@ -345,38 +346,8 @@ fn main() {
     }
 }
 
-/// `GET /` → index.html，首屏注入当前主题。
-///
-/// 主题占位符 `data-theme="__THEME__"` 在 HTML 模板里。这里读 `state.theme`（可能被
-/// `set_theme_handler` 在运行时改过）替换占位符。inline `<script>` 会同步把 `"system"`
-/// 解析成 dark/light 应用到 `<html>`，避免 CSS 应用后的 FOUC。
-async fn index_handler(State(state): State<AppState>) -> Html<String> {
-    let theme = state.theme.lock().clone();
-    let name = escape_html(&state.name);
-    let html = crate::assets::read_str("index.html")
-        .expect("index.html 编译期嵌入，运行时一定存在")
-        .replace(
-            "data-theme=\"__THEME__\"",
-            &format!("data-theme=\"{}\"", theme),
-        )
-        .replace(
-            "<title>__DEVICE_NAME__</title>",
-            &format!("<title>{}</title>", name),
-        );
-    Html(html)
-}
-
-/// 把设备名里的 HTML 元字符转义，避免 `<title>` 注入。设备名来自 CLI / config.toml /
-/// hostname，CLI 和文件来源没有限制字符集，所以这条 escape 是必要的（虽然 hostname 几乎
-/// 不会含这些字符）。theme 字段已过 `normalize_theme` 校验只能是三个固定字符串，无需 escape。
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
-
+// 页面 handler 在 assets.rs（index_handler / config_page_handler，首屏注入主题 +
+// 设备名），配置页的 /api/* handlers 在 api.rs，配置文件本体在 config.rs——main 只做编排。
 async fn async_main(
     token: String,
     name: String,
@@ -420,7 +391,9 @@ async fn async_main(
         });
     }
 
-    let state = AppState {
+    // 业务核心状态（协议/文件传输/配置 API 的全部字段）+ 进程协调句柄。
+    // 拆成两层是为了让 ws::dispatch 只依赖 CoreState，单测无需构造 tao EventLoop。
+    let core = CoreState {
         token: token.clone(),
         name: name.clone(),
         addr,
@@ -430,27 +403,30 @@ async fn async_main(
         save_dir: save_dir.clone(),
         max_size,
         registry,
-        shutdown_notify: shutdown_notify.clone(),
-        tray_proxy,
         theme: Arc::new(parking_lot::Mutex::new(theme)),
         mouse_sensitivity: Arc::new(parking_lot::Mutex::new(mouse_sensitivity)),
     };
+    let state = AppState {
+        core,
+        shutdown_notify: shutdown_notify.clone(),
+        tray_proxy,
+    };
 
     let app = Router::new()
-        .route("/", get(index_handler))
+        .route("/", get(assets::index_handler))
         .route("/css/{*path}", get(assets::static_handler))
         .route("/js/{*path}", get(assets::static_handler))
         .route("/ws", get(ws::ws_handler))
         .route("/upload/{id}", post(file_transfer::upload_handler))
         .route("/download/{id}", get(file_transfer::download_handler))
-        .route("/config", get(config::config_page_handler))
-        .route("/api/config", get(config::get_config_handler).post(config::set_config_handler))
-        .route("/api/theme", post(config::set_theme_handler))
-        .route("/api/mouse_sensitivity", post(config::set_mouse_sensitivity_handler))
-        .route("/api/list_dir", get(config::list_dir_handler))
-        .route("/api/local_ips", get(config::local_ips_handler))
-        .route("/api/check_port", get(config::check_port_handler))
-        .route("/api/restart", post(config::restart_handler))
+        .route("/config", get(assets::config_page_handler))
+        .route("/api/config", get(api::get_config_handler).post(api::set_config_handler))
+        .route("/api/theme", post(api::set_theme_handler))
+        .route("/api/mouse_sensitivity", post(api::set_mouse_sensitivity_handler))
+        .route("/api/list_dir", get(api::list_dir_handler))
+        .route("/api/local_ips", get(api::local_ips_handler))
+        .route("/api/check_port", get(api::check_port_handler))
+        .route("/api/restart", post(api::restart_handler))
         .with_state(state);
 
     // graceful shutdown：tray 退出菜单触发 notify，server 收到信号后优雅关闭

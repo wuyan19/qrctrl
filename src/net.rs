@@ -153,6 +153,54 @@ pub fn list_local_ipv4s() -> Vec<Ipv4Addr> {
         .collect()
 }
 
+/// 枚举当前网卡并应用 `--prefer-ip` 过滤，返回扫码 URL 的候选列表。
+///
+/// 每次调用都实时枚举——DHCP 续租换 IP、切换 Wi-Fi 后重调即可拿到新地址。
+/// 启动 banner（main.rs）和托盘动态刷新（tray.rs）共用这条路径。
+pub fn lan_candidates(prefer_ip: Option<&str>) -> Vec<Ipv4Addr> {
+    let all = list_local_ipv4s();
+    match prefer_ip {
+        Some(p) => filter_by_subnet(&all, p),
+        None => all,
+    }
+}
+
+/// 从候选列表里挑一个 IP 构造扫码 URL（无候选回退 localhost）。
+///
+/// 服务端监听 0.0.0.0，localhost 兜底只是「没有可展示的局域网地址」时的
+/// 降级显示；此时本来就没有手机可达的地址，QR 内容是什么无所谓。
+pub fn scan_url_from(candidates: &[Ipv4Addr], port: u16, token: &str) -> String {
+    match candidates.first() {
+        Some(ip) => format!("http://{}:{}/?t={}", ip, port, token),
+        None => format!("http://localhost:{}/?t={}", port, token),
+    }
+}
+
+/// 实时枚举网卡构造扫码 URL。托盘菜单「复制 URL / 显示二维码」和 QR 窗口
+/// 的周期性 IP 检查都走这里——主机 IP 变化后无需重启进程。
+pub fn build_scan_url(prefer_ip: Option<&str>, port: u16, token: &str) -> String {
+    scan_url_from(&lan_candidates(prefer_ip), port, token)
+}
+
+/// 实时构造配置页 URL（`http://ip:port/config?t=token`）。
+/// 托盘菜单「配置...」用；从 build_scan_url 的结果推导而不是让调用方
+/// 自己对 URL 做 `split_once("?t=")` 字符串手术——URL 的内部格式只归本模块管。
+pub fn build_config_url(prefer_ip: Option<&str>, port: u16, token: &str) -> String {
+    config_url_from_scan(&build_scan_url(prefer_ip, port, token))
+}
+
+/// 纯转换：把扫码 URL 变成配置页 URL（插 `/config` 段）。抽出来便于单测。
+fn config_url_from_scan(scan: &str) -> String {
+    match scan.split_once("?t=") {
+        Some((base, tok)) => {
+            // base 末尾若是 /（形如 http://ip:port/），替换成 /config；否则直接补
+            let trimmed = base.trim_end_matches('/');
+            format!("{}/config?t={}", trimmed, tok)
+        }
+        None => scan.to_string(), // 理论上不会发生：build_scan_url 的产物一定含 ?t=
+    }
+}
+
 /// 在候选 IP 中按子网前缀过滤。
 ///
 /// `prefer_subnet` 例如 "192.168.20" 或 "192.168.20." 都可以——只做
@@ -291,6 +339,35 @@ mod tests {
         assert!(is_virtual_interface("OpenVPN TAP-Windows6"));
         assert!(is_virtual_interface("utun0"));
         assert!(is_virtual_interface("WireGuard Adapter"));
+    }
+
+    #[test]
+    fn scan_url_from_formats_first_candidate() {
+        let ips = vec![Ipv4Addr::new(192, 168, 20, 175), Ipv4Addr::new(10, 0, 0, 1)];
+        assert_eq!(
+            scan_url_from(&ips, 9000, "ab12"),
+            "http://192.168.20.175:9000/?t=ab12"
+        );
+    }
+
+    #[test]
+    fn scan_url_from_falls_back_to_localhost() {
+        assert_eq!(scan_url_from(&[], 8080, "tok"), "http://localhost:8080/?t=tok");
+    }
+
+    #[test]
+    fn build_config_url_inserts_config_segment() {
+        assert_eq!(
+            config_url_from_scan("http://192.168.20.175:8080/?t=ab12"),
+            "http://192.168.20.175:8080/config?t=ab12"
+        );
+        // localhost 兜底路径同样处理
+        assert_eq!(
+            config_url_from_scan("http://localhost:9000/?t=tok"),
+            "http://localhost:9000/config?t=tok"
+        );
+        // 没有 ?t= 的输入原样返回（理论不可达，防御分支）
+        assert_eq!(config_url_from_scan("http://x/"), "http://x/");
     }
 
     #[test]

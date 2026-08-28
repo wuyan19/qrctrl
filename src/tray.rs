@@ -16,6 +16,7 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tao::dpi::PhysicalSize;
 use tao::event::{Event, StartCause, WindowEvent};
@@ -27,15 +28,33 @@ use tokio::sync::Notify;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
 
+use crate::net;
 use crate::qr;
+
+/// QR 窗口的渲染参数（物理像素；实际值按窗口 scale_factor 放大，见 `qr_module_scale`）。
+const QR_MODULE_SCALE: u32 = 12;
+const QR_BORDER_MODULES: u32 = 4;
+/// QR 窗口打开期间每 3 秒重新枚举一次网卡，主机 IP 变化（DHCP 续租 /
+/// 切换 Wi-Fi）时自动重绘二维码和 URL，无需重启进程。
+const IP_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
 pub struct TrayState {
     pub device_name: String,
-    pub url: String,
+    /// 扫码 URL 的 token。URL 不再启动时算死——显示/复制时实时枚举网卡构造。
+    pub token: String,
+    pub port: u16,
+    pub prefer_ip: Option<String>,
     /// 手机上传文件的保存目录，托盘菜单「打开文件保存目录」点开它。
     pub save_dir: PathBuf,
     /// 双击启动（无 console、无 banner）时为 true，tray 初始化后自动弹 QR 码窗口。
     pub auto_show_qr: bool,
+}
+
+impl TrayState {
+    /// 实时构造当前扫码 URL（每次调用重新枚举网卡）。
+    fn current_url(&self) -> String {
+        net::build_scan_url(self.prefer_ip.as_deref(), self.port, &self.token)
+    }
 }
 
 pub enum UserEvent {
@@ -57,6 +76,8 @@ struct QrWindowState {
     pixels: Vec<u32>,
     pixel_w: u32,
     pixel_h: u32,
+    /// 当前窗口展示的 URL。IP 定时检查发现 `current_url()` 与之不同时触发重绘。
+    url: String,
 }
 
 pub fn run_tray_event_loop(
@@ -104,9 +125,16 @@ pub fn run_tray_event_loop(
     // tray_icon 必须保持 owned 直到 event loop 结束，否则图标会消失。
     let mut tray_icon: Option<tray_icon::TrayIcon> = None;
     let mut qr_window: Option<QrWindowState> = None;
+    // QR 窗口打开期间的下次 IP 检查时刻（WaitUntil 用）
+    let mut next_ip_check = Instant::now();
 
     event_loop.run(move |event, target, control_flow| {
-        *control_flow = ControlFlow::Wait;
+        // QR 窗口开着时定时醒来检查 IP 变化；否则长眠等用户事件。
+        *control_flow = if qr_window.is_some() {
+            ControlFlow::WaitUntil(next_ip_check)
+        } else {
+            ControlFlow::Wait
+        };
         match event {
             Event::NewEvents(StartCause::Init) => {
                 let icon = load_icon();
@@ -122,43 +150,66 @@ pub fn run_tray_event_loop(
                 // 双击启动（无 console、无 banner）时自动弹 QR 码窗口，
                 // 让用户立刻能扫。从 PowerShell/terminal 启动时 banner 已有，不重复弹。
                 if state.auto_show_qr {
-                    match open_qr_window(target, &state.url) {
-                        Ok(w) => qr_window = Some(w),
+                    match open_qr_window(target, &state.current_url()) {
+                        Ok(w) => {
+                            qr_window = Some(w);
+                            next_ip_check = Instant::now() + IP_REFRESH_INTERVAL;
+                        }
                         Err(e) => tracing::warn!("自动显示二维码失败: {}", e),
+                    }
+                }
+            }
+            // WaitUntil 到点：QR 窗口开着，重新枚举网卡看地址是否变化。
+            // 没变化时仅重置闹钟，不重绘（重绘有可感知的窗口调整风险）。
+            Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                next_ip_check = Instant::now() + IP_REFRESH_INTERVAL;
+                if let Some(w) = qr_window.as_mut() {
+                    let url = state.current_url();
+                    if url != w.url {
+                        tracing::info!("网络地址已变化，二维码更新为 {}", url);
+                        if let Err(e) = refresh_qr_window(w, &url) {
+                            tracing::warn!("二维码自动刷新失败: {}", e);
+                        }
                     }
                 }
             }
             Event::UserEvent(UserEvent::MenuEvent(e)) => {
                 if e.id == copy_url_i.id() {
-                    let url = state.url.clone();
+                    let url = state.current_url();
                     std::thread::spawn(move || {
                         if let Ok(mut cb) = arboard::Clipboard::new() {
                             let _ = cb.set_text(url);
                         }
                     });
                 } else if e.id == show_qr_i.id() {
-                    if let Some(w) = qr_window.as_ref() {
-                        w.window.set_focus();
-                    } else {
-                        match open_qr_window(target, &state.url) {
-                            Ok(w) => qr_window = Some(w),
-                            Err(e) => tracing::warn!("显示二维码失败: {}", e),
+                    let url = state.current_url();
+                    match qr_window.as_mut() {
+                        // 已开着：先同步最新地址（可能 IP 已变），再聚焦
+                        Some(w) => {
+                            if url != w.url {
+                                if let Err(e) = refresh_qr_window(w, &url) {
+                                    tracing::warn!("二维码刷新失败: {}", e);
+                                }
+                            }
+                            w.window.set_focus();
                         }
+                        None => match open_qr_window(target, &url) {
+                            Ok(w) => {
+                                qr_window = Some(w);
+                                // 窗口重开时闹钟可能早已过期（WaitUntil 过去时刻会立即
+                                // 触发一次多余的网卡枚举），重置回整 3 秒节流
+                                next_ip_check = Instant::now() + IP_REFRESH_INTERVAL;
+                            }
+                            Err(e) => tracing::warn!("显示二维码失败: {}", e),
+                        },
                     }
                 } else if e.id == open_save_dir_i.id() {
                     let save_dir = state.save_dir.clone();
                     std::thread::spawn(move || open_in_file_manager(&save_dir));
                 } else if e.id == config_i.id() {
-                    // 构造配置页 URL：把 state.url 的 `?t=` 前面插入 `/config`
-                    // state.url 形如 http://ip:port/?t=token 或 http://localhost:port/?t=token
-                    let config_url = match state.url.split_once("?t=") {
-                        Some((base, tok)) => {
-                            // base 末尾若是 /，替换成 /config；否则直接补 /config
-                            let trimmed = base.trim_end_matches('/');
-                            format!("{}/config?t={}", trimmed, tok)
-                        }
-                        None => state.url.clone(), // 兜底，理论上不会发生
-                    };
+                    // 配置页 URL 由 net 模块统一构造（在扫码 URL 的 ?t= 前插 /config）
+                    let config_url =
+                        net::build_config_url(state.prefer_ip.as_deref(), state.port, &state.token);
                     std::thread::spawn(move || open_url_in_browser(&config_url));
                 } else if e.id == quit_i.id() {
                     shutdown_notify.notify_waiters();
@@ -199,6 +250,23 @@ pub fn run_tray_event_loop(
                     }
                 }
             }
+            // 拖到不同缩放比例的显示器：按新 DPI 重渲染二维码并调整窗口尺寸，
+            // 否则从大模块屏拖到小模块屏 QR 会被裁剪、反向则四周白边变大。
+            // 此刻 window.scale_factor() 已是新值，refresh_qr_window 直接读到。
+            Event::WindowEvent {
+                event: WindowEvent::ScaleFactorChanged { .. },
+                window_id,
+                ..
+            } => {
+                if let Some(w) = qr_window.as_mut() {
+                    if window_id == w.window.id() {
+                        let url = w.url.clone();
+                        if let Err(e) = refresh_qr_window(w, &url) {
+                            tracing::warn!("DPI 变化后二维码重渲染失败: {}", e);
+                        }
+                    }
+                }
+            }
             Event::RedrawRequested(window_id) => {
                 if let Some(w) = qr_window.as_mut() {
                     if window_id == w.window.id() {
@@ -213,18 +281,39 @@ pub fn run_tray_event_loop(
     });
 }
 
+/// 按窗口 scale_factor 换算 QR 模块的物理像素数（HiDPI 屏上二维码同步放大，
+/// 视觉尺寸各屏一致）。最低 1，防 0。
+fn qr_module_scale(scale_factor: f64) -> u32 {
+    ((QR_MODULE_SCALE as f64) * scale_factor).round().max(1.0) as u32
+}
+
+/// 按新 URL 重渲染已开窗口的二维码（IP 变化时刷新用）。
+fn refresh_qr_window(state: &mut QrWindowState, url: &str) -> Result<(), String> {
+    let module_scale = qr_module_scale(state.window.scale_factor());
+    let (pixels, w, h) = qr::render_qr_to_pixels(url, module_scale, QR_BORDER_MODULES)?;
+    state.pixels = pixels;
+    state.pixel_w = w;
+    state.pixel_h = h;
+    state.url = url.to_string();
+    state.window.set_inner_size(PhysicalSize::new(w, h));
+    state.window.request_redraw();
+    Ok(())
+}
+
 fn open_qr_window(
     target: &EventLoopWindowTarget<UserEvent>,
     url: &str,
 ) -> Result<QrWindowState, String> {
-    let scale = 12u32;
-    let border = 4u32;
-    let (pixels, pixel_w, pixel_h) = qr::render_qr_to_pixels(url, scale, border)?;
-
+    // 先不可见 + 占位尺寸建窗口，读到真实 scale_factor 后按 DPI 渲染二维码、
+    // 调整到最终尺寸再显示——避免先闪一个小窗再跳变。
+    // always_on_top：浮动层级，扫码时不会被其他应用的窗口盖住
+    // （macOS 上尤其关键：Accessory 后台应用不主动前置就会开在前台应用之下）。
     let window = Rc::new(
         WindowBuilder::new()
             .with_title("QR Control")
-            .with_inner_size(PhysicalSize::new(pixel_w, pixel_h))
+            .with_visible(false)
+            .with_always_on_top(true)
+            .with_inner_size(PhysicalSize::new(200u32, 200u32))
             .with_resizable(false)
             .with_window_icon(load_window_icon())
             .build(target)
@@ -235,6 +324,11 @@ fn open_qr_window(
     // 强推回 Accessory。每次开 QR 窗口都调一次，开销可忽略。
     #[cfg(target_os = "macos")]
     target.set_activation_policy_at_runtime(ActivationPolicy::Accessory);
+
+    let module_scale = qr_module_scale(window.scale_factor());
+    let (pixels, pixel_w, pixel_h) =
+        qr::render_qr_to_pixels(url, module_scale, QR_BORDER_MODULES)?;
+    window.set_inner_size(PhysicalSize::new(pixel_w, pixel_h));
 
     let context =
         softbuffer::Context::new(Rc::clone(&window)).map_err(|e| format!("context: {}", e))?;
@@ -248,6 +342,10 @@ fn open_qr_window(
         .resize(init_w, init_h)
         .map_err(|e| format!("resize: {}", e))?;
 
+    window.set_visible(true);
+    // 打开即前置：置顶层级保证不被盖住，set_focus 再把窗口抬到最前并成为
+    // key window（用户扫码时第一时间看得到）。
+    window.set_focus();
     window.request_redraw();
 
     Ok(QrWindowState {
@@ -257,6 +355,7 @@ fn open_qr_window(
         pixels,
         pixel_w,
         pixel_h,
+        url: url.to_string(),
     })
 }
 
