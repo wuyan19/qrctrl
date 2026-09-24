@@ -91,11 +91,15 @@
 
 <div id="file-list-modal" class="modal">
   <div class="file-list-card">
-    <div class="file-list-title">选择要下载的文件</div>
+    <div class="file-list-title" id="file-list-title">选择要下载的文件</div>
+    <!-- 保存目录模式下显示：解释为什么列的是保存目录而不是剪贴板 -->
+    <div class="file-list-subtitle" id="file-list-subtitle" hidden>剪贴板无文件 · 以下为保存目录内容</div>
     <div class="file-list-items" id="file-list-items"></div>
-    <div class="file-list-actions">
-      <button id="file-list-download-all">全部下载</button>
+    <div class="file-list-actions" id="file-list-actions">
+      <button id="file-list-select-all">全选</button>
       <button id="file-list-download" disabled>下载</button>
+      <!-- 仅保存目录模式显示：勾选后删除 save_dir 里的文件 -->
+      <button id="file-list-delete" hidden>删除</button>
       <button id="file-list-close">取消</button>
     </div>
   </div>
@@ -118,7 +122,7 @@
       <p><b>拉图片</b>：把 PC 剪贴板的图片取到手机预览，长按可保存到相册。</p>
       <p><b>推图片</b>：选手机相册图片或粘贴截图，写入 PC 剪贴板。</p>
       <h3>文件传输</h3>
-      <p><b>拉文件</b>：下载 PC 剪贴板里复制的文件（Finder / 资源管理器里 Cmd+C / Ctrl+C 复制的文件）。</p>
+      <p><b>拉文件</b>：下载 PC 剪贴板里复制的文件（Finder / 资源管理器里 Cmd+C / Ctrl+C 复制的文件）。剪贴板无文件时，改为列出 PC 的文件保存目录，可勾选下载或删除其中的文件。</p>
       <p><b>推文件</b>：把手机文件传到 PC 的文件保存目录（默认下载目录下的 qrctrl 子目录，可在 PC 托盘菜单 →「配置...」中修改）。可一次选多个文件，整批结束后文件路径自动复制到 PC 剪贴板，在文件管理器或支持文件粘贴的应用里按 Ctrl+V / Cmd+V 直接粘出，就像在 PC 上选中文件后按 Ctrl+C 一样。</p>
       <h3>鼠标触控板</h3>
       <p>点 <b>触控板</b> 进入鼠标控制：拖动移动指针，轻点左键，双击后按住拖动；底部按钮支持滚动、左右键、复制 / 粘贴快捷键。</p>

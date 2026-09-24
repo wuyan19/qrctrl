@@ -98,7 +98,7 @@ qrctrl -a 127.0.0.1 -p 9000 -n "测试"   # 短参数形式
 ### 文件传输（双向）
 
 - **手机 → PC 上传**：从手机选任意文件。通过 HTTP 流式上传（`POST /upload/{id}`）到 `--save-dir`（默认 `<下载目录>/qrctrl/`）。单文件大小受 `--max-size` 限制。可一次选多个文件，整批结束后服务器把所有保存路径一次性写到 PC 剪贴板（就像在资源管理器 / Finder 里选中多个文件按 Ctrl+C），在文件管理器或支持文件粘贴的应用（Telegram、Discord、Office 等）按 Ctrl+V / Cmd+V 直接粘出。这条通道和图片上传完全独立：文件上传永远是文件引用，图片上传（选图 / 粘贴截图）照旧写位图。
-- **PC → 手机 下载**：在面板长按文件链接，从 PC 保存目录下载。
+- **PC → 手机 下载**：「拉文件」读取 PC 剪贴板里复制的文件（Finder / 资源管理器 Cmd+C / Ctrl+C）；剪贴板无文件时自动改为列出 PC 文件保存目录，可勾选下载或删除其中的文件。
 
 文件注册到传输注册表并带过期；后台任务每 60s 清理过期条目。
 
@@ -173,7 +173,7 @@ macOS 下 `.app` bundle 的 `Info.plist` 设了 `LSUIElement=true`，Finder 双�
 - PC 在配置的 `addr:port` 上跑 HTTP + WebSocket 服务。HTTP 层在 `/` 提供静态控制面板，在 `/upload/{id}` + `/download/{id}` 流式传输文件。
 - 手机通过二维码 URL 中嵌入的 token 鉴权。
 - WebSocket 升级后，服务端立刻推送 `{"type":"server_info","name":"..."}`，前端用于状态栏/提示文字。
-- 其他 WebSocket 消息都是 JSON，带 `type` 字段（`text` / `get_clipboard_text` / `get_clipboard_image` / `set_clipboard_image` / `set_clipboard_files` / `upload_start` / `get_file` / `enter` / `tab` / `backspace` / `copy` / `paste` / `mouse_move` / `mouse_click` / `mouse_press` / `mouse_release` / `mouse_scroll`）。
+- 其他 WebSocket 消息都是 JSON，带 `type` 字段（`text` / `get_clipboard_text` / `get_clipboard_image` / `set_clipboard_image` / `set_clipboard_files` / `upload_start` / `get_file` / `delete_file` / `enter` / `tab` / `backspace` / `copy` / `paste` / `mouse_move` / `mouse_click` / `mouse_press` / `mouse_release` / `mouse_scroll`）。
 - 文本注入走 enigo 的 `text()` 方法——Unicode 路径，不依赖键盘布局或输入法状态。
 - 剪贴板访问走 arboard（文本 + 图片 + 文件列表）。读路径上文件引用会读实际文件——用户 `Cmd+C` 文件而不是复制图片内容时这点很关键。
 - 鼠标事件走 enigo（macOS CGEvent、Windows SendInput、Linux XTest）。

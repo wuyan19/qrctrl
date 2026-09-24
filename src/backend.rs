@@ -76,6 +76,8 @@ impl From<clipboard::CbError> for BackendError {
 }
 
 /// 剪贴板里某个文件的元信息（从 clipboard::FileMeta 重新导出，避免测试代码依赖 clipboard 模块细节）。
+/// Clone 给 MockBackend 的预设文件列表用。
+#[derive(Clone)]
 pub struct FileMeta {
     pub path: PathBuf,
     pub name: String,

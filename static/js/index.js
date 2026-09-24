@@ -24,13 +24,20 @@ const transferProgress = document.getElementById('transfer-progress');
 const transferStats = document.getElementById('transfer-stats');
 const transferCancel = document.getElementById('transfer-cancel');
 const fileListModal = document.getElementById('file-list-modal');
+const fileListTitle = document.getElementById('file-list-title');
+const fileListSubtitle = document.getElementById('file-list-subtitle');
 const fileListItems = document.getElementById('file-list-items');
 const fileListClose = document.getElementById('file-list-close');
-const fileListDownloadAll = document.getElementById('file-list-download-all');
+const fileListActions = document.getElementById('file-list-actions');
+const fileListSelectAll = document.getElementById('file-list-select-all');
 const fileListDownload = document.getElementById('file-list-download');
-// picker 当前显示的文件列表缓存 + 选中索引集合
+const fileListDelete = document.getElementById('file-list-delete');
+// picker 当前显示的文件列表缓存 + 选中索引集合。
+// fileListMode 区分两种来源：'clipboard' 剪贴板多文件选择（只能下载）、
+// 'savedir' 保存目录浏览（剪贴板为空时的兜底，可下载也可删除）。
 let fileListCurrent = [];
 let fileListSelected = new Set();
+let fileListMode = 'clipboard';
 const toolPanel = document.getElementById('tool-panel');
 const btnTools = document.getElementById('btn-tools');
 const btnEnter = document.getElementById('btn-enter');
@@ -196,6 +203,7 @@ function connect() {
       case 'clipboard_image': onPullImage(m.data, m.mime); break;
       case 'upload_ready':    onUploadReady(m.url); break;
       case 'file_list':       onFileList(m.files); break;
+      case 'save_dir_list':   onSaveDirList(m.files, m.failed); break;
       case 'empty':           toast(`${deviceName} 剪贴板为空`); break;
       case 'error':           toast('失败：' + (m.code || 'unknown')); break;
     }
@@ -644,15 +652,42 @@ function onFileList(files) {
   showFilePicker(files);
 }
 
+// 服务端返回 save_dir_list（get_file 剪贴板为空的兜底 / delete_file 后的刷新）→
+// 非空弹「保存目录」选择器；空则关掉已打开的选择器或直接 toast。
+function onSaveDirList(files, failed) {
+  if (failed && failed.length > 0) {
+    toast(`删除失败 ${failed.length} 个（可能被占用）`);
+  }
+  if (!files || files.length === 0) {
+    if (fileListModal.classList.contains('show') && fileListMode === 'savedir') {
+      // 删除后目录已空：关弹窗
+      hideFilePicker();
+      toast('保存目录已空');
+    } else {
+      toast(`${deviceName} 剪贴板为空 · 保存目录无文件`);
+    }
+    return;
+  }
+  showFilePicker(files, 'savedir');
+}
+
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function showFilePicker(files) {
+// mode: 'clipboard'（默认，只下载）| 'savedir'（保存目录浏览，多出删除按钮）
+function showFilePicker(files, mode) {
+  fileListMode = mode || 'clipboard';
   fileListCurrent = files;
   fileListSelected.clear();
-  updateDownloadButton();
+  const isSaveDir = fileListMode === 'savedir';
+  fileListTitle.textContent = isSaveDir ? '文件保存目录' : '选择要下载的文件';
+  fileListSubtitle.hidden = !isSaveDir;
+  fileListDelete.hidden = !isSaveDir;
+  // 保存目录模式 4 个按钮换成 2x2 布局，避免一行挤不下
+  fileListActions.classList.toggle('two-rows', isSaveDir);
+  updateActionButtons();
   fileListItems.innerHTML = '';
   files.forEach((f, i) => {
     const item = document.createElement('div');
@@ -666,30 +701,42 @@ function showFilePicker(files) {
         fileListSelected.add(i);
         item.classList.add('selected');
       }
-      updateDownloadButton();
+      updateActionButtons();
     });
     fileListItems.appendChild(item);
   });
   fileListModal.classList.add('show');
 }
 
-function updateDownloadButton() {
+function updateActionButtons() {
   const n = fileListSelected.size;
   fileListDownload.textContent = n > 0 ? `下载 ${n}` : '下载';
   fileListDownload.disabled = n === 0;
+  if (fileListMode === 'savedir') {
+    fileListDelete.textContent = n > 0 ? `删除 ${n}` : '删除';
+    fileListDelete.disabled = n === 0;
+  }
+  // 全部已勾选时按钮翻转为「取消全选」（空列表保持「全选」，不可点）
+  const all = fileListCurrent.length > 0 && n === fileListCurrent.length;
+  fileListSelectAll.textContent = all ? '取消全选' : '全选';
+  fileListSelectAll.disabled = fileListCurrent.length === 0;
 }
 
-// 「全部下载」:浏览器对连续程序性下载有限制(iOS Safari 尤其严),用 250ms stagger
-// 让每个 <a download> 有足够时间被浏览器下载管理器接管。
-fileListDownloadAll.addEventListener('click', () => {
-  const files = fileListCurrent;
-  hideFilePicker();
-  files.forEach((f, i) => {
-    setTimeout(() => onFileMeta(f), i * 250);
+// 「全选」/「取消全选」：toggle 勾选全部条目，之后走统一的「下载 N」/「删除 N」。
+fileListSelectAll.addEventListener('click', () => {
+  const selectAll = fileListSelected.size !== fileListCurrent.length;
+  fileListItems.querySelectorAll('.file-list-item').forEach((el, i) => {
+    el.classList.toggle('selected', selectAll);
   });
+  fileListSelected.clear();
+  if (selectAll) {
+    fileListCurrent.forEach((_, i) => fileListSelected.add(i));
+  }
+  updateActionButtons();
 });
 
-// 「下载 N」:只下载选中的文件,同样 250ms stagger。
+// 「下载 N」:只下载选中的文件,250ms stagger 避免连续程序性下载被浏览器限流
+//(iOS Safari 尤其严),让每个 <a download> 有足够时间被下载管理器接管。
 fileListDownload.addEventListener('click', () => {
   const selected = [...fileListSelected].sort((a, b) => a - b).map((i) => fileListCurrent[i]);
   if (selected.length === 0) return;
@@ -697,6 +744,17 @@ fileListDownload.addEventListener('click', () => {
   selected.forEach((f, i) => {
     setTimeout(() => onFileMeta(f), i * 250);
   });
+});
+
+// 「删除 N」:仅保存目录模式。确认后发 delete_file，server 删完回刷新后的
+// save_dir_list，本弹窗就地刷新（不手动关开）；等待期间禁用按钮防重复提交。
+fileListDelete.addEventListener('click', () => {
+  if (fileListMode !== 'savedir') return;
+  const names = [...fileListSelected].sort((a, b) => a - b).map((i) => fileListCurrent[i].name);
+  if (names.length === 0) return;
+  if (!confirm(`删除 ${names.length} 个文件？删除后不可恢复。`)) return;
+  fileListDelete.disabled = true;
+  send({ type: 'delete_file', names });
 });
 
 function hideFilePicker() {

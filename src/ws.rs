@@ -10,10 +10,17 @@ use serde::Deserialize;
 
 use crate::backend::{BackendError, DynBackend, InputBackend};
 use crate::clipboard;
-use crate::file_transfer::{self, UploadMeta};
+use crate::file_transfer::{self, DownloadMeta, UploadMeta};
 use crate::state::{AppState, CoreState};
 
 const MAX_TEXT_BYTES: usize = 100 * 1024;
+
+/// get_file 的两种结果：剪贴板里有文件 → 剪贴板列表；为空 → save_dir 兜底列表。
+/// 判定和列目录都在 spawn_blocking 闭包里完成（列目录是阻塞 IO）。
+enum PulledFiles {
+    Clipboard(Vec<crate::backend::FileMeta>),
+    SaveDir(Vec<DownloadMeta>),
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -45,6 +52,9 @@ enum Command {
     SetClipboardFiles { names: Vec<String> },
     UploadStart { name: String, size: u64, mime: String },
     GetFile,
+    /// 删除 save_dir 顶层的文件（只接受纯文件名）。前端在保存目录选择器里
+    /// 勾选后发出；server 删完直接回刷新后的 save_dir_list，弹窗就地更新。
+    DeleteFile { names: Vec<String> },
     Enter,
     Tab,
     Backspace,
@@ -182,38 +192,63 @@ async fn dispatch(state: &CoreState, raw: &str) -> String {
             upload_ready_json(&id, &url)
         }
         Command::GetFile => {
+            let save_dir = state.save_dir.clone();
             spawn_block(
                 backend.clone(),
-                |b| b.read_clipboard_files(),
-                |files| {
-                    if files.is_empty() {
-                        empty_json()
-                    } else {
-                        let files_json: Vec<serde_json::Value> = files
+                move |b| {
+                    let files = b.read_clipboard_files()?;
+                    if !files.is_empty() {
+                        return Ok(PulledFiles::Clipboard(files));
+                    }
+                    // 剪贴板无文件 → 兜底改为列 save_dir，前端弹「保存目录」
+                    // 选择器（可勾选下载、可删除）。列目录是阻塞 IO，留在
+                    // spawn_blocking 闭包里做。
+                    Ok(PulledFiles::SaveDir(file_transfer::list_save_dir_files(
+                        &save_dir,
+                    )))
+                },
+                |res| match res {
+                    PulledFiles::Clipboard(files) => file_list_json(
+                        files
                             .into_iter()
                             .map(|fm| {
-                                let name = fm.name.clone();
-                                let size = fm.size;
-                                let mime = fm.mime.clone();
-                                let meta = file_transfer::DownloadMeta {
-                                    path: fm.path,
-                                    name: name.clone(),
-                                    size,
-                                    mime: mime.clone(),
-                                    created_at: std::time::Instant::now(),
-                                };
-                                let id = state.registry.register_download(meta);
-                                let url = format!("/download/{}?t={}", id, state.token);
-                                serde_json::json!({
-                                    "name": name,
-                                    "size": size,
-                                    "mime": mime,
-                                    "url": url,
-                                })
+                                download_entry(
+                                    state,
+                                    DownloadMeta {
+                                        path: fm.path,
+                                        name: fm.name,
+                                        size: fm.size,
+                                        mime: fm.mime,
+                                        created_at: std::time::Instant::now(),
+                                    },
+                                )
                             })
-                            .collect();
-                        file_list_json(files_json)
-                    }
+                            .collect(),
+                    ),
+                    PulledFiles::SaveDir(files) => save_dir_list_json(
+                        files.into_iter().map(|m| download_entry(state, m)).collect(),
+                        &[],
+                    ),
+                },
+            )
+            .await
+        }
+        Command::DeleteFile { names } => {
+            let save_dir = state.save_dir.clone();
+            spawn_block(
+                backend.clone(),
+                move |_b| {
+                    // 删除 + 立即重列，一个响应让前端弹窗就地刷新。
+                    // delete_save_dir_files 内部做 is_plain_filename 严格过滤 +
+                    // 只删顶层普通文件（不跟随符号链接）。
+                    let failed = file_transfer::delete_save_dir_files(&save_dir, &names);
+                    Ok((file_transfer::list_save_dir_files(&save_dir), failed))
+                },
+                |(files, failed)| {
+                    save_dir_list_json(
+                        files.into_iter().map(|m| download_entry(state, m)).collect(),
+                        &failed,
+                    )
                 },
             )
             .await
@@ -401,6 +436,32 @@ fn file_list_json(files: Vec<serde_json::Value>) -> String {
     serde_json::json!({"type": "file_list", "files": files}).to_string()
 }
 
+/// save_dir 文件列表响应（get_file 剪贴板为空的兜底 + delete_file 删除后的刷新）。
+/// failed 是删除失败的名字（只在 delete_file 响应里非空），前端据此提示占用/失败。
+fn save_dir_list_json(files: Vec<serde_json::Value>, failed: &[String]) -> String {
+    let mut v = serde_json::json!({"type": "save_dir_list", "files": files});
+    if !failed.is_empty() {
+        v["failed"] = serde_json::json!(failed);
+    }
+    v.to_string()
+}
+
+/// 把一个待下载文件注册进 registry 并生成前端下载条目 JSON（name/size/mime/url）。
+/// 剪贴板列表与 save_dir 兜底列表共用。
+fn download_entry(state: &CoreState, meta: DownloadMeta) -> serde_json::Value {
+    let name = meta.name.clone();
+    let size = meta.size;
+    let mime = meta.mime.clone();
+    let id = state.registry.register_download(meta);
+    let url = format!("/download/{}?t={}", id, state.token);
+    serde_json::json!({
+        "name": name,
+        "size": size,
+        "mime": mime,
+        "url": url,
+    })
+}
+
 fn server_info_json(name: &str, theme: &str) -> String {
     // version 用 env! 编译期内联 Cargo.toml 的 package.version，前端拿来做「当前版本」展示。
     // theme 是当前生效的主题偏好（"dark"/"light"/"system"），前端据此应用 [data-theme]。
@@ -580,6 +641,22 @@ mod tests {
         assert!(matches!(cmd, Command::Paste));
     }
 
+    #[test]
+    fn parse_delete_file() {
+        let cmd: Command =
+            serde_json::from_str(r#"{"type":"delete_file","names":["a.txt","b.txt"]}"#).unwrap();
+        match cmd {
+            Command::DeleteFile { names } => assert_eq!(names, vec!["a.txt", "b.txt"]),
+            _ => panic!("expected DeleteFile"),
+        }
+    }
+
+    #[test]
+    fn parse_delete_file_missing_names_fails() {
+        let r: Result<Command, _> = serde_json::from_str(r#"{"type":"delete_file"}"#);
+        assert!(r.is_err());
+    }
+
     // ========================================================================
     // MockBackend：记录所有调用，验证 dispatch 调度机制（spawn_inject/spawn_block）
     // 把 backend 方法调用 + 参数正确传递 + 错误收敛这三件事从「无法 mock 的真实 OS」
@@ -618,6 +695,8 @@ mod tests {
         fail: bool,
         /// read_clipboard_text 返回的预设文本。
         text: Option<String>,
+        /// read_clipboard_files 返回的预设文件列表（get_file 各分支用）。
+        files: Vec<FileMeta>,
     }
 
     impl MockBackend {
@@ -733,7 +812,7 @@ mod tests {
             if self.fail {
                 Err(BackendError::Clipboard(CbError::ContentNotAvailable))
             } else {
-                Ok(Vec::new())
+                Ok(self.files.clone())
             }
         }
         fn push_files_to_clipboard(
@@ -754,6 +833,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             fail,
             text: None,
+            files: Vec::new(),
         })
     }
 
@@ -791,6 +871,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             fail: false,
             text: Some("hello".to_string()),
+            files: Vec::new(),
         });
         let json = spawn_block(
             backend,
@@ -1063,5 +1144,97 @@ mod tests {
         let core = test_core(dir.path().to_path_buf(), mock_dyn(false));
         let resp = dispatch(&core, "not json").await;
         assert_eq!(resp, r#"{"type":"error","code":"decode_failed"}"#);
+    }
+
+    /// 剪贴板无文件时 get_file 兜底列 save_dir：返回 save_dir_list，
+    /// 条目带已注册的 /download url（take_download 能取回 meta）。
+    #[tokio::test]
+    async fn dispatch_get_file_empty_clipboard_falls_back_to_save_dir() {
+        let dir = TempDir::new("fallback");
+        std::fs::write(dir.path().join("a.txt"), b"hello").unwrap();
+        let core = test_core(dir.path().to_path_buf(), mock_dyn(false));
+        let resp = dispatch(&core, r#"{"type":"get_file"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["type"], "save_dir_list");
+        let files = v["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0]["name"], "a.txt");
+        assert_eq!(files[0]["size"], 5);
+        let url = files[0]["url"].as_str().unwrap();
+        assert!(url.starts_with("/download/"));
+        assert!(url.ends_with("?t=testtoken123456"));
+        let id = url.trim_start_matches("/download/").split('?').next().unwrap();
+        let meta = core.registry.take_download(id).expect("download registered");
+        assert_eq!(meta.name, "a.txt");
+    }
+
+    /// 剪贴板无文件且 save_dir 也为空：save_dir_list 空数组（前端 toast），
+    /// 不再回 empty。
+    #[tokio::test]
+    async fn dispatch_get_file_all_empty_returns_empty_save_dir_list() {
+        let dir = TempDir::new("fallback-empty");
+        let core = test_core(dir.path().to_path_buf(), mock_dyn(false));
+        let resp = dispatch(&core, r#"{"type":"get_file"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["type"], "save_dir_list");
+        assert_eq!(v["files"].as_array().unwrap().len(), 0);
+        assert!(v.get("failed").is_none());
+    }
+
+    /// 剪贴板有文件时 get_file 优先剪贴板列表，不落 save_dir。
+    #[tokio::test]
+    async fn dispatch_get_file_prefers_clipboard_when_nonempty() {
+        let dir = TempDir::new("fallback-pref");
+        std::fs::write(dir.path().join("dirfile.txt"), b"x").unwrap();
+        let backend: crate::backend::DynBackend = std::sync::Arc::new(MockBackend {
+            calls: Mutex::new(Vec::new()),
+            fail: false,
+            text: None,
+            files: vec![FileMeta {
+                path: dir.path().join("clip.txt"),
+                name: "clip.txt".to_string(),
+                size: 7,
+                mime: "text/plain".to_string(),
+            }],
+        });
+        let core = test_core(dir.path().to_path_buf(), backend);
+        let resp = dispatch(&core, r#"{"type":"get_file"}"#).await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["type"], "file_list");
+        let files = v["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0]["name"], "clip.txt");
+    }
+
+    /// delete_file：save_dir 内纯文件名被删，穿越名 / 不存在名计入 failed，
+    /// 响应带刷新后的 save_dir_list（剩余文件 + 可下载 url）。
+    #[tokio::test]
+    async fn dispatch_delete_file_deletes_and_returns_refreshed_list() {
+        let dir = TempDir::new("delete");
+        std::fs::write(dir.path().join("kill.txt"), b"x").unwrap();
+        std::fs::write(dir.path().join("keep.txt"), b"x").unwrap();
+        let core = test_core(dir.path().to_path_buf(), mock_dyn(false));
+        let raw = r#"{"type":"delete_file","names":["kill.txt","../evil","nope.txt"]}"#;
+        let resp = dispatch(&core, raw).await;
+
+        assert!(!dir.path().join("kill.txt").exists());
+        assert!(dir.path().join("keep.txt").exists());
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["type"], "save_dir_list");
+        let names: Vec<&str> = v["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["keep.txt"]);
+        assert!(v["files"][0]["url"].as_str().unwrap().starts_with("/download/"));
+        let failed: Vec<&str> = v["failed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f.as_str().unwrap())
+            .collect();
+        assert_eq!(failed, vec!["../evil", "nope.txt"]);
     }
 }

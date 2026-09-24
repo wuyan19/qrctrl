@@ -497,6 +497,15 @@
     padding-bottom: 8px;
     border-bottom: 1px solid var(--border);
   }
+  /* 保存目录模式的副标题：紧贴标题下方解释列表来源 */
+  .file-list-subtitle {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--ink-dim);
+    text-align: center;
+    letter-spacing: 0.04em;
+    margin-top: -6px;
+  }
   .file-list-items {
     overflow-y: auto;
     display: flex;
@@ -585,10 +594,41 @@
     font-weight: 500;
     border-radius: 4px;
   }
-  #file-list-download-all {
+  /* 「下载 N」是主操作：琥珀填充（原「全部下载」的主按钮样式） */
+  #file-list-download {
     background: var(--amber);
     color: var(--bg);
     border-color: var(--amber);
+  }
+  /* 「全选」是选择辅助动作，次级样式 */
+  #file-list-select-all {
+    background: transparent;
+    color: var(--ink-dim);
+    border-color: var(--border);
+  }
+  #file-list-select-all:hover:not(:disabled) {
+    color: var(--amber);
+    border-color: var(--border-amber);
+  }
+  /* 删除按钮：危险动作用红色描边（仅保存目录模式显示） */
+  #file-list-delete {
+    background: transparent;
+    color: var(--red);
+    border-color: var(--border);
+  }
+  #file-list-delete:hover:not(:disabled) {
+    border-color: var(--red);
+    color: var(--red);
+  }
+  #file-list-delete:disabled {
+    color: var(--ink-faint);
+  }
+  /* 保存目录模式 4 个按钮换 2x2 网格，避免手机上一行挤 4 个太窄 */
+  .file-list-actions.two-rows {
+    flex-wrap: wrap;
+  }
+  .file-list-actions.two-rows button {
+    flex: 1 1 calc(50% - 4px);
   }
   #file-list-close {
     background: transparent;

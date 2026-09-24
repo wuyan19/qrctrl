@@ -105,6 +105,79 @@ pub fn is_plain_filename(name: &str) -> bool {
     sanitize_filename(name).as_deref() == Some(name)
 }
 
+/// save_dir 列表上限：目录被塞爆时保住 WS 消息体积和手机端列表长度。
+/// 正常使用（手机逐个推文件到 PC）远达不到这个量级。
+const MAX_SAVE_DIR_LIST: usize = 200;
+
+/// 列出 save_dir 顶层的普通文件：跳过子目录与 dot 开头的隐藏文件（与配置页
+/// list_dir 的降噪规则一致），按修改时间倒序（最近上传的排最前），最多
+/// MAX_SAVE_DIR_LIST 个，每个包装成可直接注册下载的 DownloadMeta。
+///
+/// 给「拉文件」的剪贴板兜底通道用：剪贴板无文件时前端弹保存目录选择器，
+/// 条目直接带 /download url。用 `DirEntry::metadata`（不穿透符号链接）判定
+/// 普通文件，避免 save_dir 里被手工放进来的链接把目录外的文件带出去。
+pub fn list_save_dir_files(save_dir: &Path) -> Vec<DownloadMeta> {
+    let entries = match std::fs::read_dir(save_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<(std::time::SystemTime, DownloadMeta)> = Vec::new();
+    for entry in entries.flatten() {
+        let name = match entry.file_name().to_str() {
+            Some(n) if !n.starts_with('.') => n.to_string(),
+            _ => continue,
+        };
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let path = entry.path();
+        let mime = mime_guess::from_path(&path)
+            .first_or_octet_stream()
+            .to_string();
+        out.push((
+            modified,
+            DownloadMeta {
+                path,
+                name,
+                size: meta.len(),
+                mime,
+                created_at: Instant::now(),
+            },
+        ));
+    }
+    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.into_iter().take(MAX_SAVE_DIR_LIST).map(|(_, m)| m).collect()
+}
+
+/// 删除 save_dir 顶层的文件，返回删除失败的名字列表。
+///
+/// 安全线：names 只接受纯文件名（`is_plain_filename` 过滤，含路径成分的一律
+/// 计入失败，不给「删目录外文件」留口子）；用 `symlink_metadata` 判定真实
+/// 普通文件（不跟随符号链接，目录 / 链接都不删）。失败原因（Windows 上文件
+/// 被占用、已被外部删掉等）不逐个区分——前端只按 failed 数量提示。
+pub fn delete_save_dir_files(save_dir: &Path, names: &[String]) -> Vec<String> {
+    let mut failed = Vec::new();
+    for name in names {
+        if !is_plain_filename(name) {
+            failed.push(name.clone());
+            continue;
+        }
+        let path = save_dir.join(name);
+        let is_regular = std::fs::symlink_metadata(&path)
+            .map(|m| m.file_type().is_file())
+            .unwrap_or(false);
+        if !is_regular || std::fs::remove_file(&path).is_err() {
+            failed.push(name.clone());
+        }
+    }
+    failed
+}
+
 /// 文件名冲突时加 UUID 短码后缀：`movie.mkv` → `movie_a3c7f8d2.mkv`。
 pub fn resolve_conflict(dir: &Path, name: &str) -> PathBuf {
     let target = dir.join(name);
@@ -341,6 +414,55 @@ mod tests {
         let name = got.file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with("README_"));
         assert!(!name.contains('.'));
+    }
+
+    #[test]
+    fn list_save_dir_files_sorts_newest_first_and_skips_noise() {
+        let dir = tempdir();
+        std::fs::write(dir.join("old.txt"), b"1").unwrap();
+        // 保证 mtime 严格递增：主流文件系统（NTFS/ext4/APFS）精度远高于此间隔
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.join("new.bin"), b"22").unwrap();
+        std::fs::create_dir_all(dir.join("subdir")).unwrap();
+        std::fs::write(dir.join(".hidden"), b"3").unwrap();
+
+        let files = list_save_dir_files(&dir);
+        let names: Vec<&str> = files.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["new.bin", "old.txt"]);
+        assert_eq!(files[0].size, 2);
+        // 未知扩展名兜底 octet-stream，已知扩展名有具体 mime
+        assert_eq!(files[0].mime, "application/octet-stream");
+        assert!(files[1].mime.starts_with("text/"));
+    }
+
+    #[test]
+    fn list_save_dir_files_missing_dir_returns_empty() {
+        let files = list_save_dir_files(Path::new("/nonexistent/qrctrl-test"));
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn delete_save_dir_files_removes_only_regular_top_level() {
+        let dir = tempdir();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        std::fs::write(dir.join("b.txt"), b"x").unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+
+        let failed = delete_save_dir_files(
+            &dir,
+            &[
+                "a.txt".to_string(),
+                "../evil".to_string(),
+                "sub".to_string(),
+                "missing.txt".to_string(),
+            ],
+        );
+
+        assert!(!dir.join("a.txt").exists());
+        assert!(dir.join("b.txt").exists());
+        assert!(dir.join("sub").exists());
+        // 穿越名、目录名、不存在的名字都计入 failed（顺序跟随输入）
+        assert_eq!(failed, vec!["../evil", "sub", "missing.txt"]);
     }
 
     #[test]

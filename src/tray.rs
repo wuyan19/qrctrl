@@ -111,7 +111,7 @@ pub fn run_tray_event_loop(
     let copy_url_i = MenuItem::new("复制 URL", true, None);
     let show_qr_i = MenuItem::new("显示二维码", true, None);
     let open_save_dir_i = MenuItem::new("打开文件保存目录", true, None);
-    let config_i = MenuItem::new("配置...", true, None);
+    let config_i = MenuItem::new("配置", true, None);
     let quit_i = MenuItem::new("退出", true, None);
     let _ = menu.append_items(&[
         &copy_url_i,

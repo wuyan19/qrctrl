@@ -474,6 +474,24 @@ async fn async_main(
         .unwrap();
 }
 
+/// 把字节数格式化成人类可读单位（1024 进制）：`512 B` / `1.5 KB` / `10 GB`。
+/// 四舍五入到一位小数后是整数的省掉小数位——`10 GB` 而不是 `10.0 GB`。
+fn format_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    let rounded = (value * 10.0).round() / 10.0;
+    if rounded.fract() < 1e-9 {
+        format!("{:.0} {}", rounded, UNITS[unit])
+    } else {
+        format!("{:.1} {}", rounded, UNITS[unit])
+    }
+}
+
 fn print_banner(
     name: &str,
     url: &str,
@@ -488,7 +506,7 @@ fn print_banner(
     println!(" qrctrl 已启动 · 设备名：{}", name);
     println!("--------------------------------------------");
     println!(" 文件保存目录：{}", save_dir.display());
-    println!(" 单文件上限：{} 字节", max_size);
+    println!(" 单文件上限：{}", format_size(max_size));
     println!("--------------------------------------------");
     println!(" 手机扫码连接（相机/微信扫一扫）：");
     println!();
@@ -506,4 +524,25 @@ fn print_banner(
     }
     println!("============================================");
     println!("\n监听 {}:{}，托盘图标常驻，菜单选择退出\n", addr, port);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_size_units() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1024), "1 KB");
+        assert_eq!(format_size(1536), "1.5 KB");
+        assert_eq!(format_size(1024 * 1024), "1 MB");
+        assert_eq!(format_size(10737418240), "10 GB"); // 默认 max_size：精确 10 GiB
+    }
+
+    #[test]
+    fn format_size_caps_at_tb() {
+        // 超过 TB 也停在 TB 单位，不会越界 panic（u64::MAX = 2^64-1，除到 TB 档 = 2^24）
+        assert_eq!(format_size(u64::MAX), "16777216 TB");
+    }
 }
