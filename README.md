@@ -157,6 +157,7 @@ Once running, qrctrl lives in the system tray with a menu:
 - **Copy URL** — puts the scan URL on the clipboard for manual sharing.
 - **Show QR** — reopens the QR window if you closed it.
 - **Open save folder** — reveals the phone-upload save folder in the system file manager (Finder / Explorer / xdg-open).
+- **Clear clipboard** — wipes the PC clipboard (text, images, and file references alike).
 - **Settings...** — opens the browser config page so double-click launch users (who have no terminal) can still change parameters.
 - **Quit** — triggers graceful shutdown (in-flight uploads finish before exit).
 

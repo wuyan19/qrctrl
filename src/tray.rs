@@ -111,12 +111,14 @@ pub fn run_tray_event_loop(
     let copy_url_i = MenuItem::new("复制 URL", true, None);
     let show_qr_i = MenuItem::new("显示二维码", true, None);
     let open_save_dir_i = MenuItem::new("打开文件保存目录", true, None);
+    let clear_clipboard_i = MenuItem::new("清空剪切板", true, None);
     let config_i = MenuItem::new("配置", true, None);
     let quit_i = MenuItem::new("退出", true, None);
     let _ = menu.append_items(&[
         &copy_url_i,
         &show_qr_i,
         &open_save_dir_i,
+        &clear_clipboard_i,
         &config_i,
         &PredefinedMenuItem::separator(),
         &quit_i,
@@ -206,6 +208,16 @@ pub fn run_tray_event_loop(
                 } else if e.id == open_save_dir_i.id() {
                     let save_dir = state.save_dir.clone();
                     std::thread::spawn(move || open_in_file_manager(&save_dir));
+                } else if e.id == clear_clipboard_i.id() {
+                    // 清空剪贴板。arboard::Clipboard 不跨线程共享，照「复制 URL」
+                    // 的模式在子线程里开新句柄、用完即弃；clear() 不区分格式地
+                    // 清掉文本/图片/文件引用。
+                    std::thread::spawn(|| {
+                        match arboard::Clipboard::new().and_then(|mut cb| cb.clear()) {
+                            Ok(()) => tracing::info!("剪贴板已清空"),
+                            Err(e) => tracing::warn!("清空剪贴板失败: {}", e),
+                        }
+                    });
                 } else if e.id == config_i.id() {
                     // 配置页 URL 由 net 模块统一构造（在扫码 URL 的 ?t= 前插 /config）
                     let config_url =
