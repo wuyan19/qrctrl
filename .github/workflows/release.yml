@@ -77,6 +77,10 @@ jobs:
 
       - name: Rename binary (non-macOS)
         if: runner.os != 'macOS'
+        # 必须显式 bash：Windows runner 默认 shell 是 pwsh，`${TAG}` 在 PowerShell 里
+        # 是未定义的 PS 变量（环境变量要写 $env:TAG），展开为空会复制出
+        # `qrctrl--x86_64-windows.exe`，与 Upload 的 glob 不匹配 → 资产静默缺失。
+        shell: bash
         run: cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "target/${{ matrix.target }}/release/qrctrl-${TAG}-${{ matrix.asset_suffix }}"
 
       - name: Upload release asset
