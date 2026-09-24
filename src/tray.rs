@@ -287,7 +287,8 @@ fn qr_module_scale(scale_factor: f64) -> u32 {
     ((QR_MODULE_SCALE as f64) * scale_factor).round().max(1.0) as u32
 }
 
-/// 按新 URL 重渲染已开窗口的二维码（IP 变化时刷新用）。
+/// 按新 URL 重渲染已开窗口的二维码（IP 变化时刷新用）。标题同步换成新 URL，
+/// 用户手动输入时照着标题抄就行，不用等二维码渲染完。
 fn refresh_qr_window(state: &mut QrWindowState, url: &str) -> Result<(), String> {
     let module_scale = qr_module_scale(state.window.scale_factor());
     let (pixels, w, h) = qr::render_qr_to_pixels(url, module_scale, QR_BORDER_MODULES)?;
@@ -295,6 +296,7 @@ fn refresh_qr_window(state: &mut QrWindowState, url: &str) -> Result<(), String>
     state.pixel_w = w;
     state.pixel_h = h;
     state.url = url.to_string();
+    state.window.set_title(url);
     state.window.set_inner_size(PhysicalSize::new(w, h));
     state.window.request_redraw();
     Ok(())
@@ -310,7 +312,9 @@ fn open_qr_window(
     // （macOS 上尤其关键：Accessory 后台应用不主动前置就会开在前台应用之下）。
     let window = Rc::new(
         WindowBuilder::new()
-            .with_title("QR Control")
+            // 标题就是扫码 URL：窗口本身就是展示这个地址用的，标题栏照抄
+            // 方便用户手动输入（IP 变化时 refresh_qr_window 会同步更新）。
+            .with_title(url)
             .with_visible(false)
             .with_always_on_top(true)
             .with_inner_size(PhysicalSize::new(200u32, 200u32))

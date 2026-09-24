@@ -451,7 +451,7 @@ async function doRestartAndWait({ doingText, doneText }) {
       }
       if (res.status === 401) {
         // 服务器回来了但 URL 里的 token 失效（用户改过 token）
-        banner.innerHTML = `<strong>${doneText}</strong>Token 已变更，请通过托盘菜单「配置...」或重新扫码进入配置页。`;
+        banner.innerHTML = `<strong>${doneText}</strong>Token 已变更，请通过托盘菜单「配置」或重新扫码进入配置页。`;
         restartBtn.textContent = '已重启';
         return;
       }

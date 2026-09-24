@@ -183,7 +183,7 @@ pub fn build_scan_url(prefer_ip: Option<&str>, port: u16, token: &str) -> String
 }
 
 /// 实时构造配置页 URL（`http://ip:port/config?t=token`）。
-/// 托盘菜单「配置...」用；从 build_scan_url 的结果推导而不是让调用方
+/// 托盘菜单「配置」用；从 build_scan_url 的结果推导而不是让调用方
 /// 自己对 URL 做 `split_once("?t=")` 字符串手术——URL 的内部格式只归本模块管。
 pub fn build_config_url(prefer_ip: Option<&str>, port: u16, token: &str) -> String {
     config_url_from_scan(&build_scan_url(prefer_ip, port, token))
