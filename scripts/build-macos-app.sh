@@ -60,13 +60,22 @@ chmod +x "$app/Contents/MacOS/qrctrl"
 # 注入版本号
 sed "s/@VERSION@/$version/g" "$root/assets/macos/Info.plist" > "$app/Contents/Info.plist"
 
-# 4. 生成 AppIcon.icns：用 sips 把 assets/icon.png 切成 10 个标准尺寸，
+# 4. 生成 AppIcon.icns：用 sips 把图标切成 10 个标准尺寸，
 #    再用 iconutil 打成 .icns。两者都是 macOS 自带，CI 与本地都有。
-#    失败仅 warn——bundle 仍可用，只是 Finder/Dock 显示通用图标。
+#    源用 assets/macos/icon-1024.png（824 图形 + 100px 透明边距，Apple 图标
+#    规范——满幅图标在 Dock/Finder 中会比系统图标显大），由
+#    `cargo run --example gen_icon` 从 assets/icon.png 生成；缺失时回退
+#    源真 icon.png。失败仅 warn——bundle 仍可用，只是 Finder/Dock 显示通用图标。
 if command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
     iconset_dir="$(mktemp -d -t qrctrl-iconset)/AppIcon.iconset"
     mkdir -p "$iconset_dir"
-    src="$root/assets/icon.png"
+    if [[ -f "$root/assets/macos/icon-1024.png" ]]; then
+        src="$root/assets/macos/icon-1024.png"
+    else
+        src="$root/assets/icon.png"
+        echo "[warn] assets/macos/icon-1024.png 不存在，回退 assets/icon.png（无 macOS 标准边距，Dock 中会偏大）" >&2
+        echo "       可 cargo run --example gen_icon 生成" >&2
+    fi
     # 规格：<像素尺寸>:<文件名>
     specs=(
         "16:icon_16x16.png"
