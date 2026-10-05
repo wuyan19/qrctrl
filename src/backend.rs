@@ -104,6 +104,10 @@ pub trait InputBackend: Send + Sync {
     fn inject_mouse_scroll(&self, amount: i32, axis: Axis) -> Result<(), BackendError>;
     fn inject_copy(&self) -> Result<(), BackendError>;
     fn inject_paste(&self) -> Result<(), BackendError>;
+    /// 长文本通道：文本写入 PC 剪贴板后立即模拟 Ctrl/Cmd+V 粘贴到焦点窗口。
+    /// 逐键注入对长文本又慢又丢字（macOS 高频 CGEvent 会被事件队列丢弃），
+    /// 粘贴通道一次到位且原样保真；副作用是覆盖 PC 剪贴板原内容。
+    fn paste_text(&self, text: &str) -> Result<(), BackendError>;
 
     // ---- 剪贴板 ----
     /// 读剪贴板文本。`Ok(None)` 表示无文本格式。
@@ -177,6 +181,12 @@ impl InputBackend for EnigoBackend {
     }
 
     fn inject_paste(&self) -> Result<(), BackendError> {
+        inject::inject_paste(&self.enigo).map_err(BackendError::Inject)
+    }
+
+    fn paste_text(&self, text: &str) -> Result<(), BackendError> {
+        // 顺序不能反：写入失败绝不触发粘贴，否则会把剪贴板里的旧内容粘出去
+        clipboard::write_text(&self.clipboard, text).map_err(BackendError::Clipboard)?;
         inject::inject_paste(&self.enigo).map_err(BackendError::Inject)
     }
 

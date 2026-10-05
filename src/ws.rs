@@ -13,7 +13,12 @@ use crate::clipboard;
 use crate::file_transfer::{self, DownloadMeta, UploadMeta};
 use crate::state::{AppState, CoreState};
 
-const MAX_TEXT_BYTES: usize = 100 * 1024;
+/// 逐键注入的文本上限（字符数）：超过后改走「写剪贴板 + 模拟粘贴」通道。
+/// 逐键路径对长文本又慢又不可靠——macOS/Windows 高频键事件会被目标应用丢字，
+/// 部分终端对 \n / \r 的处理还不一致；粘贴通道一次到位。副作用是覆盖 PC 剪贴板。
+const PASTE_TEXT_CHAR_LIMIT: usize = 200;
+/// 文本总字节上限。粘贴通道下 MB 级文本毫无压力（axum WS 消息上限 64MB），超出截断。
+const MAX_TEXT_BYTES: usize = 1024 * 1024;
 
 /// get_file 的两种结果：剪贴板里有文件 → 剪贴板列表；为空 → save_dir 兜底列表。
 /// 判定和列目录都在 spawn_blocking 闭包里完成（列目录是阻塞 IO）。
@@ -114,7 +119,13 @@ async fn dispatch(state: &CoreState, raw: &str) -> String {
     match cmd {
         Command::Text { mut value } => {
             truncate_in_place(&mut value, MAX_TEXT_BYTES);
-            spawn_inject(backend.clone(), move |b| b.inject_text(&value)).await
+            if value.chars().count() > PASTE_TEXT_CHAR_LIMIT {
+                // 长文本（粘贴整篇 Markdown 等场景）：逐键注入会丢字，改走
+                // 「写剪贴板 + 模拟 Ctrl/Cmd+V」，前端无感（协议不变，透明切换）。
+                spawn_inject(backend.clone(), move |b| b.paste_text(&value)).await
+            } else {
+                spawn_inject(backend.clone(), move |b| b.inject_text(&value)).await
+            }
         }
         Command::GetClipboardText => {
             spawn_block(backend.clone(), |b| b.read_clipboard_text(), |res| match res {
@@ -672,6 +683,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     enum Call {
         InjectText(String),
+        PasteText(String),
         InjectKey(String),
         InjectMouseMove(i32, i32),
         InjectMouseButton(String),
@@ -712,6 +724,14 @@ mod tests {
     impl InputBackend for MockBackend {
         fn inject_text(&self, text: &str) -> Result<(), BackendError> {
             self.record(Call::InjectText(text.to_string()));
+            if self.fail {
+                Err(BackendError::Inject("mock fail".into()))
+            } else {
+                Ok(())
+            }
+        }
+        fn paste_text(&self, text: &str) -> Result<(), BackendError> {
+            self.record(Call::PasteText(text.to_string()));
             if self.fail {
                 Err(BackendError::Inject("mock fail".into()))
             } else {
@@ -922,6 +942,68 @@ mod tests {
         )
         .await;
         assert_eq!(json, r#"{"type":"empty"}"#);
+    }
+
+    /// 短文本走逐键注入通道（不碰剪贴板）。
+    #[tokio::test]
+    async fn dispatch_short_text_injects_keystrokes() {
+        let backend = mock_dyn(false);
+        let probe = backend.clone();
+        let dir = TempDir::new("shorttext");
+        let core = test_core(dir.path().to_path_buf(), backend);
+        let resp = dispatch(&core, r#"{"type":"text","value":"hi 你好"}"#).await;
+        assert_eq!(resp, r#"{"type":"ok"}"#);
+        let mock = probe.as_ref().as_any().downcast_ref::<MockBackend>().unwrap();
+        assert_eq!(mock.calls(), vec![Call::InjectText("hi 你好".to_string())]);
+    }
+
+    /// 超过 PASTE_TEXT_CHAR_LIMIT 的长文本走「写剪贴板 + 模拟粘贴」通道，
+    /// 不再逐键注入——这是长 Markdown 文档不丢字的关键。
+    #[tokio::test]
+    async fn dispatch_long_text_uses_clipboard_paste_channel() {
+        let backend = mock_dyn(false);
+        let probe = backend.clone();
+        let dir = TempDir::new("longtext");
+        let core = test_core(dir.path().to_path_buf(), backend);
+        let long = "好".repeat(PASTE_TEXT_CHAR_LIMIT + 1);
+        let raw = format!(r#"{{"type":"text","value":"{}"}}"#, long);
+        let resp = dispatch(&core, &raw).await;
+        assert_eq!(resp, r#"{"type":"ok"}"#);
+        let mock = probe.as_ref().as_any().downcast_ref::<MockBackend>().unwrap();
+        assert_eq!(mock.calls(), vec![Call::PasteText(long)]);
+    }
+
+    /// 恰好 PASTE_TEXT_CHAR_LIMIT 字（阈值边界，`>` 不含等号）仍走逐键注入通道。
+    #[tokio::test]
+    async fn dispatch_text_at_threshold_uses_keystroke_injection() {
+        let backend = mock_dyn(false);
+        let probe = backend.clone();
+        let dir = TempDir::new("threshold");
+        let core = test_core(dir.path().to_path_buf(), backend);
+        let text = "好".repeat(PASTE_TEXT_CHAR_LIMIT);
+        let raw = format!(r#"{{"type":"text","value":"{}"}}"#, text);
+        let resp = dispatch(&core, &raw).await;
+        assert_eq!(resp, r#"{"type":"ok"}"#);
+        let mock = probe.as_ref().as_any().downcast_ref::<MockBackend>().unwrap();
+        assert_eq!(mock.calls(), vec![Call::InjectText(text)]);
+    }
+
+    /// 粘贴通道同样受 MAX_TEXT_BYTES 截断（截断后仍超阈值，走粘贴而不是逐键）。
+    #[tokio::test]
+    async fn dispatch_oversized_long_text_truncated_then_pasted() {
+        let backend = mock_dyn(false);
+        let probe = backend.clone();
+        let dir = TempDir::new("huge");
+        let core = test_core(dir.path().to_path_buf(), backend);
+        let huge = "a".repeat(MAX_TEXT_BYTES + 100);
+        let raw = format!(r#"{{"type":"text","value":"{}"}}"#, huge);
+        let resp = dispatch(&core, &raw).await;
+        assert_eq!(resp, r#"{"type":"ok"}"#);
+        let mock = probe.as_ref().as_any().downcast_ref::<MockBackend>().unwrap();
+        assert_eq!(
+            mock.calls(),
+            vec![Call::PasteText("a".repeat(MAX_TEXT_BYTES))]
+        );
     }
 
     /// 鼠标移动 helper：参数透传（含灵敏度会在 dispatch 层乘，helper 本身原样传）。

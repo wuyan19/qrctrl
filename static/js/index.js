@@ -116,7 +116,8 @@ let reconnectDelay = 1000;
 let toastTimer = null;
 let autoSendTimer = null;
 let isComposing = false;
-let lastSentType = null;
+// 已发出 set_clipboard_image、还没等到 ok 回包（截图上传成功的确认 toast 用）
+let pendingImageAck = false;
 let deviceName = 'PC';
 let currentUploadXHR = null;
 // 多文件上传队列:用户选多个文件全部入队,串行传(收到 upload_ready 才发下一个)。
@@ -153,7 +154,6 @@ function toast(msg) {
 function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj));
-    lastSentType = obj.type;
     return true;
   }
   toast('未连接');
@@ -171,6 +171,8 @@ function connect() {
   ws.onclose = () => {
     setStatus(`${deviceName} 已断开 · ${Math.round(reconnectDelay / 1000)}s 后重连`, false);
     sendBtn.disabled = true;
+    // 断线期间不可能再收到回包，清掉挂起的确认标志（否则重连后下一条 ok 会误弹 toast）
+    pendingImageAck = false;
     setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 10000);
   };
@@ -195,7 +197,8 @@ function connect() {
         break;
       case 'ok':
         // 文本注入不弹 toast（用户能直接看到焦点窗口出字，频繁 toast 反而烦）
-        if (lastSentType === 'set_clipboard_image') {
+        if (pendingImageAck) {
+          pendingImageAck = false;
           toast(`已写入 ${deviceName} 剪贴板`);
         }
         break;
@@ -205,7 +208,10 @@ function connect() {
       case 'file_list':       onFileList(m.files); break;
       case 'save_dir_list':   onSaveDirList(m.files, m.failed); break;
       case 'empty':           toast(`${deviceName} 剪贴板为空`); break;
-      case 'error':           toast('失败：' + (m.code || 'unknown')); break;
+      case 'error':
+        pendingImageAck = false;
+        toast('失败：' + (m.code || 'unknown'));
+        break;
     }
   };
 }
@@ -277,9 +283,7 @@ function onPullImage(b64, mime) {
 }
 
 // 大 base64 分块编码，避免 fromCharCode 栈溢出。
-async function fileToB64(file) {
-  const buf = await file.arrayBuffer();
-  const bytes = new Uint8Array(buf);
+function bytesToB64(bytes) {
   let bin = '';
   const chunk = 0x8000;
   for (let i = 0; i < bytes.length; i += chunk) {
@@ -288,21 +292,47 @@ async function fileToB64(file) {
   return btoa(bin);
 }
 
+// 文件头魔数判断是否图片（PNG / JPEG / GIF / WebP / BMP）。
+// 部分安卓浏览器和微信 webview 粘贴截图时 File.type 是空串，按 MIME 拦截会把
+// 截图误杀；服务端 image crate 解码本来就不信 MIME（按内容嗅探），前端对空
+// MIME 的文件用同样的思路做准入判断。
+function looksLikeImage(bytes) {
+  if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return true; // PNG
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return true; // JPEG
+  if (bytes.length >= 3 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return true; // GIF
+  if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46
+      && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return true; // WebP（RIFF....WEBP）
+  if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) return true; // BMP
+  return false;
+}
+
 async function uploadImage(file) {
-  if (!file.type.startsWith('image/')) {
+  // type 为空串（部分安卓 webview 粘贴截图时不带 MIME）不能直接拒，交给魔数嗅探
+  if (file.type && !file.type.startsWith('image/')) {
     toast('只支持图片');
     return;
   }
+  let bytes;
   try {
-    const b64 = await fileToB64(file);
-    if (b64.length > MAX_IMG_B64) {
-      toast('图片太大（>10MB）');
-      return;
-    }
-    send({ type: 'set_clipboard_image', data: b64 });
-    toast('上传中...');
+    bytes = new Uint8Array(await file.arrayBuffer());
   } catch (e) {
     toast('读取文件失败');
+    return;
+  }
+  if (!file.type && !looksLikeImage(bytes)) {
+    toast('只支持图片');
+    return;
+  }
+  const b64 = bytesToB64(bytes);
+  if (b64.length > MAX_IMG_B64) {
+    toast('图片太大（>10MB）');
+    return;
+  }
+  if (send({ type: 'set_clipboard_image', data: b64 })) {
+    // 确认回包用独立标志位：全局「最后一条指令类型」会被触控板 mouse_move 等
+    // 高频消息覆盖，ok 回包到达时对不上号，toast 永远不弹——截图贴上去像没反应。
+    pendingImageAck = true;
+    toast('上传中...');
   }
 }
 
@@ -797,14 +827,23 @@ fileSend.addEventListener('change', () => {
 });
 pullFileBtn.addEventListener('click', () => send({ type: 'get_file' }));
 
-// 粘贴截图监听（绑 document，覆盖任意焦点）
-document.addEventListener('paste', async (e) => {
-  const items = e.clipboardData?.items || [];
-  for (const it of items) {
-    if (it.kind === 'file' && it.type.startsWith('image/')) {
+// 粘贴截图监听（绑 document，覆盖任意焦点）。items 是标准来源；部分安卓 webview
+// 不填 items 但 files 有值，两处都翻。type 为空的文件交给 uploadImage 按魔数嗅探；
+// 文本粘贴没有 file item，不拦截，走 textarea 默认插入。
+document.addEventListener('paste', (e) => {
+  const cd = e.clipboardData;
+  if (!cd) return;
+  const grab = (f) => {
+    if (f && (f.type.startsWith('image/') || !f.type)) {
       e.preventDefault();
-      uploadImage(it.getAsFile());
-      return;
+      uploadImage(f);
+      return true;
     }
+    return false;
+  };
+  for (const it of cd.items || []) {
+    if (it.kind !== 'file') continue;
+    if (grab(it.getAsFile())) return;
   }
+  grab(cd.files && cd.files[0]);
 });

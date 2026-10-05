@@ -119,6 +119,13 @@ pub fn read_text(h: &ClipboardHandle) -> Result<Option<String>, CbError> {
     }
 }
 
+/// 写文本到剪贴板。「长文本注入」的粘贴通道用：写入后由 inject 层立即模拟
+/// Ctrl/Cmd+V（见 backend::InputBackend::paste_text）。会覆盖剪贴板原内容。
+pub fn write_text(h: &ClipboardHandle, text: &str) -> Result<(), CbError> {
+    let mut cb = h.lock();
+    cb.set_text(text).map_err(map_err)
+}
+
 /// 读剪贴板图片并编码为 PNG base64。返回 Ok(None) 表示空 / 无图片格式。
 ///
 /// 优先级：剪贴板文件列表（macOS Finder Cmd+C 复制图片文件 / Windows

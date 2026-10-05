@@ -5,3 +5,4 @@
 
 # 更新签名密钥（私钥 + 口令，绝不提交；CI 走 GitHub Secrets）
 /.sign
+.DS_Store

@@ -80,9 +80,13 @@ impl TransferRegistry {
 
 /// 把任意输入转成纯文件名，拒绝路径遍历。
 /// "/etc/passwd" → "passwd"；"a/b/c.txt" → "c.txt"；"../etc/passwd" → None；"" → None。
+/// `\` 一律视作路径分隔符（`std::path` 在 Unix 上不认它，但手机上传的名字可能带
+/// Windows 风格路径，不能在 Mac/Linux 上原样落盘）：r"D:\dir\movie.mkv" → "movie.mkv"。
 pub fn sanitize_filename(raw: &str) -> Option<String> {
     use std::path::Component;
-    let p = Path::new(raw);
+    // 先归一化 `\` → `/`，让 Path 的组件语义跨平台一致（`..\` 变体也因此被拒）
+    let normalized = raw.replace('\\', "/");
+    let p = Path::new(&normalized);
     // 显式拒绝 ParentDir，避免 file_name() 截断后绕过（如 "../etc/passwd"）
     if p.components().any(|c| matches!(c, Component::ParentDir)) {
         return None;

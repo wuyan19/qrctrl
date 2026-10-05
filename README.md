@@ -83,6 +83,8 @@ Type or use voice input, press **Enter** (or click **Send**). Text appears in wh
 
 Enable the **⚡ auto-send** checkbox to transmit automatically after typing pauses (600 ms) — IME-safe, won't fire mid-pinyin.
 
+Pasting a long document (Markdown, code, …) into the input box works too: text beyond 200 characters is automatically routed through the PC clipboard + a simulated `Ctrl+V` / `Cmd+V` — the whole document lands in one shot with nothing dropped (keystroke-by-keystroke injection loses characters on long strings). Side effect: the PC clipboard content is replaced.
+
 ### Clipboard sync (bidirectional)
 
 **PC → phone:**
@@ -91,7 +93,7 @@ Enable the **⚡ auto-send** checkbox to transmit automatically after typing pau
 
 **Phone → PC:**
 - **📷 Pick image** — Pick an image from phone album / camera. PC writes it to clipboard, then `Cmd+V` / `Ctrl+V` to paste into any app.
-- **Paste screenshot** — Screenshot on phone (Power+VolumeUp etc.), then long-press the textarea → Paste. Same clipboard-write path as file picker.
+- **Paste screenshot** — Screenshot on phone (Power+VolumeUp etc.), then long-press the textarea → Paste. Same clipboard-write path as file picker. Some Android browsers / WeChat webviews strip the MIME type from pasted screenshots — qrctrl sniffs the file magic bytes (PNG/JPEG/GIF/WebP/BMP) to catch those too.
 
 > **macOS tip**: `Cmd+Shift+4` saves a screenshot to the **file**, not the clipboard. Use `Ctrl+Cmd+Shift+4` to capture directly to clipboard. If you `Cmd+C` a screenshot file from Finder, that works too — qrctrl reads the underlying file via `arboard::Clipboard::file_list()` rather than the OS-generated placeholder icon.
 
